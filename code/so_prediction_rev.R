@@ -1,7 +1,7 @@
 # ── Packages ─────────────────────────────────────────────────────────────────
 
 pkgs <- c(
-    "boot", "caret", "dplyr", "ggplot2", "forcats", "knitr", "purrr",
+    "boot", "caret", "dplyr", "forcats", "ggplot2", "here", "knitr", "purrr",
     "randomForest", "recipes", "stringr", "tibble", "tidyr", "tidytext",
     "writexl"
 )
@@ -39,6 +39,10 @@ if (length(missing_pkgs) > 0) {
 
 .null <- lapply(pkgs, require, character.only = TRUE)
 
+# ── Set project root directory using the `here` package ──────────────────────
+
+i_am("code/so_prediction_rev.R")
+
 # ── Set seed for reproducibility ─────────────────────────────────────────────
 
 set.seed(1950)
@@ -61,7 +65,7 @@ data_dir = list(
 
 # ── Output directory ─────────────────────────────────────────────────────────
 
-out_dir <- "results/so_prediction_rev"
+out_dir <- here("results/so_prediction_rev")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # ── Load data ────────────────────────────────────────────────────────────────
