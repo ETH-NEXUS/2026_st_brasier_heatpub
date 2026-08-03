@@ -85,6 +85,9 @@ if (Sys.info()[["nodename"]] == "nexus-u02") {
     if (file.exists(cache_data_file)) {
         load(cache_data_file)
     } else {
+        if (!dir.exists(data_dir$jpas)) {
+            system("gio mount onedrive://jpasquier@ethz.ch/")
+        }
         .env <- new.env()
         load_data(data_dir = data_dir$jpas, envir = .env)
         save(list = ls(envir = .env), envir = .env, file = cache_data_file)
@@ -295,6 +298,8 @@ cat("Model fitting completed\n")
 # Selected mtry (hyperparameter that controls the number of variables to
 # consider at each split)
 cat("Selected mtry:", model_rf_loso$bestTune$mtry, "\n")
+
+# Note: mtry=2 is selected even if we try a larger grid (2,3,...,51)
 
 # ── Results of the 3-class model ─────────────────────────────────────────────
 
