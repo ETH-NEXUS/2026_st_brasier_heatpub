@@ -451,7 +451,7 @@ boot_out <- boot(
 )
 
 # Calculate percentile interval for each metric
-bootstrap_metrics <- map_dfr(
+metrics_table <- map_dfr(
     seq_along(boot_out$t0),
     function(i) {
         ci <- if (length(unique(boot_out$t[, i])) == 1L) {
@@ -483,7 +483,7 @@ bootstrap_metrics <- map_dfr(
 )
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 cat("Performance metrics:")
-kable(bootstrap_metrics, digits = 4)
+kable(metrics_table, digits = 4)
 
 # ── Variable importance ──────────────────────────────────────────────────────
 
@@ -527,7 +527,6 @@ figure3
 
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `Confusion Matrix` = as.data.frame(confusion_matrix),
-    `Overall Accuracy` = as.data.frame(t(overall_accuracy)),
     `Performance Metrics` = metrics_table,
     `Variable Importance` = varimp_class
 ))
