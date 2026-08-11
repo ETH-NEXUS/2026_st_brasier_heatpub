@@ -43,10 +43,6 @@ if (length(missing_pkgs) > 0) {
 
 i_am("code/so_prediction_rev.R")
 
-# ── Set seed for reproducibility ─────────────────────────────────────────────
-
-set.seed(1950)
-
 # ── Data location ────────────────────────────────────────────────────────────
 
 data_dir = list(
@@ -80,21 +76,23 @@ load_data <- function(data_dir, envir = .GlobalEnv) {
 
 # If running on jpas Linux workstation, cache data in /dev/shm (RAM) for
 # faster reloading (fetching from onedrive is slow)
-if (Sys.info()[["nodename"]] == "nexus-u02") {
-    cache_data_file <- "/dev/shm/2026_st_brasier_biomarker_data.rda"
-    if (file.exists(cache_data_file)) {
-        load(cache_data_file)
+is_jpas_desktop <- Sys.info()[["nodename"]] == "nexus-u02"
+
+if (is_jpas_desktop) {
+    data_cache_file <- "/dev/shm/2026_st_brasier_biomarker_data.rda"
+    if (file.exists(data_cache_file)) {
+        load(data_cache_file)
     } else {
         if (!dir.exists(data_dir$jpas)) {
             system("gio mount onedrive://jpasquier@ethz.ch/")
         }
         .env <- new.env()
         load_data(data_dir = data_dir$jpas, envir = .env)
-        save(list = ls(envir = .env), envir = .env, file = cache_data_file)
+        save(list = ls(envir = .env), envir = .env, file = data_cache_file)
         list2env(as.list(.env), envir = .GlobalEnv)
         rm(.env)
     }
-    rm(cache_data_file)
+    rm(data_cache_file)
 } else {
     load_data(data_dir = data_dir$mipr)
 }
@@ -278,22 +276,39 @@ mtry_grid <- expand.grid(
     ))
 )
 
-# Train model
-cat("Fitting model using leave-one-subject-out cross-validation\n")
-cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")), "\n")
-cat("May take a while... Please be patient\n")
-model_rf_loso <- train(
-    rf_recipe,
-    data = data_pred_3c,
-    method = "rf",
-    metric = "Accuracy",
-    trControl = loso_control,
-    tuneGrid = mtry_grid,
-    ntree = 1000,
-    importance = TRUE,
-    keep.forest = TRUE
-)
-cat("Model fitting completed\n")
+# Train model. If running on jpas Linux workstation, cache model object in
+# /dev/shm (RAM) for faster reruns (fitting the model takes a while).
+train_model <- function() {
+    set.seed(72929)
+    cat("Fitting model using leave-one-subject-out cross-validation\n")
+    cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")), "\n")
+    cat("May take a while... Please be patient\n")
+    fit <- train(
+        rf_recipe,
+        data = data_pred_3c,
+        method = "rf",
+        metric = "Accuracy",
+        trControl = loso_control,
+        tuneGrid = mtry_grid,
+        ntree = 1000,
+        importance = TRUE,
+        keep.forest = TRUE
+    )
+    cat("Model fitting completed\n")
+    return(fit)
+}
+
+rf_model_cache_file <- "/dev/shm/2026_st_brasier_rf_model_loso.rds"
+if (is_jpas_desktop) {
+    if (file.exists(rf_model_cache_file)) {
+        model_rf_loso <- readRDS(rf_model_cache_file)
+    } else {
+        model_rf_loso <- train_model()
+        saveRDS(model_rf_loso, rf_model_cache_file)
+    }
+} else {
+    model_rf_loso <- train_model()
+}
 
 # Selected mtry (hyperparameter that controls the number of variables to
 # consider at each split)
@@ -320,100 +335,155 @@ loso_predictions <- model_rf_loso$pred |>
         everything()
     )
 
-# Confusion matrix and performance metrics
-loso_confusion <- confusionMatrix(
-    data = loso_predictions$predicted,
-    reference = loso_predictions$observed,
-    mode = "everything"
+# Store each subject's predictions once (we will resample subjects to calculate
+# bootstrap confidence intervals for performance metrics)
+predictions_by_subject <- split(
+    loso_predictions,
+    loso_predictions$pid
 )
 
+# Precompute the confusion counts for each subject. Rows of a confusion matrix
+# are predicted classes and columns are observed classes, as in caret.
+subject_ids <- unique(loso_predictions$pid)
+class_levels <- levels(loso_predictions$observed)
+n_classes <- length(class_levels)
+
+subject_confusions <- predictions_by_subject[as.character(subject_ids)] |>
+    map(function(x) {
+        table(
+            factor(x$predicted, levels = class_levels),
+            factor(x$observed, levels = class_levels)
+        ) |>
+            as.vector()
+    }) |>
+    do.call(what = rbind)
+
 # Confusion matrix
-confusion_matrix <- loso_confusion$table
+confusion_matrix <- matrix(
+    colSums(subject_confusions),
+    nrow = n_classes,
+    ncol = n_classes,
+    dimnames = list(
+        predicted = class_levels,
+        observed = class_levels
+    )
+)
+
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 cat("Confusion matrix:")
 kable(confusion_matrix)
 
-# Overall accuracy
-overall_accuracy <-
-    loso_confusion$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")]
+# Function to calculate performance metrics directly from a confusion matrix.
+# This function will be used for bootstrapping and is much more efficient than
+# using caret::confusionMatrix() repeatedly.
+metrics_from_confusion <- function(confusion) {
+    total <- sum(confusion)
+    true_positive <- diag(confusion)
+    false_positive <- rowSums(confusion) - true_positive
+    false_negative <- colSums(confusion) - true_positive
+    true_negative <- total - true_positive - false_positive - false_negative
 
-# ╭───────────────────────────────────────────────────────────────────────────╮
-# │ caret calculates the accuracy confidence interval using the               │
-# │ Clopper-Pearson method, which assumes independent observations. However,  │
-# │ since we have repeated measures per subject, we need to adjust the        │
-# │ confidence interval for clustering at the subject level. We can do this   │
-# │ using a bootstrap approach.                                               │
-# ╰───────────────────────────────────────────────────────────────────────────╯
+    # A zero denominator produces NaN, matching caret for undefined metrics.
+    sensitivity <- true_positive / (true_positive + false_negative)
+    specificity <- true_negative / (true_negative + false_positive)
+    pos_pred_value <- true_positive / (true_positive + false_positive)
+    neg_pred_value <- true_negative / (true_negative + false_negative)
+    # caret defines F1 from precision and recall. In particular, F1 is
+    # undefined (rather than zero) when both are zero.
+    f1 <- 2 * pos_pred_value * sensitivity /
+        (pos_pred_value + sensitivity)
+    balanced_accuracy <- (sensitivity + specificity) / 2
 
-## Precompute per-subject correctness vectors once (avoids repeated filtering)
-subject_ids <- unique(loso_predictions$pid)
+    by_class <- cbind(
+        "Sensitivity" = sensitivity,
+        "Specificity" = specificity,
+        "Pos Pred Value" = pos_pred_value,
+        "Neg Pred Value" = neg_pred_value,
+        "F1" = f1,
+        "Balanced Accuracy" = balanced_accuracy
+    )
 
-correct_by_subject <- split(
-    loso_predictions$predicted == loso_predictions$observed,
-    loso_predictions$pid
-)
+    macro <- colMeans(by_class, na.rm = TRUE)
 
-## Bootstrap statistic: resample subject IDs, pool their predictions, compute
-## accuracy
-boot_accuracy <- function(data, indices) {
-    sampled_subjects <- data[indices]
-    mean(unlist(correct_by_subject[sampled_subjects], use.names = FALSE))
+    result <- c(
+        sum(true_positive) / total,
+        as.vector(t(by_class)),
+        macro
+    )
+
+    metric_names <- c(
+        "Overall | Accuracy",
+        as.vector(t(outer(
+            paste("Class:", class_levels),
+            colnames(by_class),
+            paste,
+            sep = " | "
+        ))),
+        paste("Macro Average", colnames(by_class), sep = " | ")
+    )
+
+    set_names(result, metric_names)
 }
 
-## Number of bootstrap replicates
+# Bootstrap statistic: resampling subjects ID
+set.seed(46742309)
+
 B <- 10000
 
-## Run the bootstrap
+boot_all_metrics <- function(data, indices) {
+    confusion <- matrix(
+        colSums(subject_confusions[indices, , drop = FALSE]),
+        nrow = n_classes,
+        ncol = n_classes,
+        dimnames = list(
+            predicted = class_levels,
+            observed = class_levels
+        )
+    )
+
+    metrics_from_confusion(confusion)
+}
+
 boot_out <- boot(
     data = subject_ids,
-    statistic = boot_accuracy,
+    statistic = boot_all_metrics,
     R = B
 )
 
-## Calculate confidence interval
-boot_ci <- boot.ci(boot_out, type = "bca")
+# Calculate percentile interval for each metric
+bootstrap_metrics <- map_dfr(
+    seq_along(boot_out$t0),
+    function(i) {
+        ci <- if (length(unique(boot_out$t[, i])) == 1L) {
+            # If the bootstrap distribution is degenerate, return a pointwise
+            # interval at the single value.
+            list(perc = matrix(c(rep(NA, 3), rep(boot_out$t0[i], 2)), nrow = 1))
+        } else {
+            boot.ci(
+                boot_out,
+                type = "perc",
+                index = i
+            )
+        }
 
-accuracy_ci_subject_bootstrap <- boot_ci$bca[1, 4:5] |>
-    set_names(c("AccuracyLowerBS", "AccuracyUpperBS"))
+        metric_parts <- str_split_fixed(
+            names(boot_out$t0)[i],
+            fixed(" | "),
+            n = 2
+        )
 
-## Add bootstrap CI to overall accuracy
-overall_accuracy <- c(overall_accuracy, accuracy_ci_subject_bootstrap)
-
-cat("\n", paste(rep("─", 70), collapse = ""), "\n")
-cat("Overall accuracy:")
-kable(as.data.frame(t(overall_accuracy)), digits = 4)
-
-# Per-class performance metrics
-per_class_metrics <- loso_confusion$byClass[, c(
-    "Sensitivity",
-    "Specificity",
-    "Pos Pred Value",
-    "Neg Pred Value",
-    "F1",
-    "Balanced Accuracy"
-)] |>
-    as_tibble(rownames = "Class")
-
-# Macro-averaged performance metrics
-macro_avg_metrics <- loso_confusion$byClass |>
-    as_tibble() |>
-    summarise(
-        Sensitivity = mean(Sensitivity, na.rm = TRUE),
-        Specificity = mean(Specificity, na.rm = TRUE),
-        `Pos Pred Value` = mean(`Pos Pred Value`, na.rm = TRUE),
-        `Neg Pred Value` = mean(`Neg Pred Value`, na.rm = TRUE),
-        F1 = mean(F1, na.rm = TRUE),
-        `Balanced Accuracy` = mean(`Balanced Accuracy`, na.rm = TRUE)
-    ) |>
-    mutate(Class = "Macro Average") |>
-    select(Class, everything())
-
-metrics_table <- bind_rows(per_class_metrics, macro_avg_metrics) |>
-    mutate(Class = str_to_title(sub("^Class: ", "", Class)))
-
+        tibble(
+            Class = metric_parts[1],
+            Metric = metric_parts[2],
+            Estimate = unname(boot_out$t0[i]),
+            Lower = ci$perc[1, 4],
+            Upper = ci$perc[1, 5]
+        )
+    }
+)
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 cat("Performance metrics:")
-kable(metrics_table, digits = 4)
+kable(bootstrap_metrics, digits = 4)
 
 # ── Variable importance ──────────────────────────────────────────────────────
 
