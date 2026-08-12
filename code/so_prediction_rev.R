@@ -281,7 +281,8 @@ mtry_grid <- expand.grid(
 train_model <- function() {
     set.seed(72929)
     cat("Fitting model using leave-one-subject-out cross-validation\n")
-    cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")), "\n")
+    cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")),
+        "\n")
     cat("May take a while... Please be patient\n")
     fit <- train(
         rf_recipe,
@@ -457,7 +458,8 @@ metrics_table <- map_dfr(
         ci <- if (length(unique(boot_out$t[, i])) == 1L) {
             # If the bootstrap distribution is degenerate, return a pointwise
             # interval at the single value.
-            list(perc = matrix(c(rep(NA, 3), rep(boot_out$t0[i], 2)), nrow = 1))
+            list(perc = matrix(c(rep(NA, 3), rep(boot_out$t0[i], 2)),
+                               nrow = 1))
         } else {
             boot.ci(
                 boot_out,
@@ -526,6 +528,7 @@ figure3
 # ── Export results ───────────────────────────────────────────────────────────
 
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
+    `Tuning Profile` = model_rf_loso$results,
     `Confusion Matrix` = as.data.frame(confusion_matrix),
     `Performance Metrics` = metrics_table,
     `Variable Importance` = varimp_class
