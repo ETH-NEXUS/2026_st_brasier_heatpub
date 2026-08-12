@@ -229,111 +229,187 @@ predictor_names <- setdiff(
     c("pid", "visit", "class")
 )
 
-# ── Leave-one-subject-out resampling ─────────────────────────────────────────
+# ── Nested subject-blocked resampling ────────────────────────────────────────
 
 subjects <- levels(droplevels(data_pred_3c$pid))
-
-# In caret:
-#   - index    = rows used for model fitting
-#   - indexOut = rows used for validation
-loso_index <- setNames(
-    map(subjects, ~ which(data_pred_3c$pid != .x)),
-    paste0("Subject_", subjects)
-)
-
-loso_index_out <- setNames(
-    map(subjects, ~ which(data_pred_3c$pid == .x)),
-    paste0("Subject_", subjects)
-)
-
-# Recipe with fold-specific imputation
-rf_recipe <- recipe(
-    class ~ .,
-    data = data_pred_3c
-) |>
-    update_role(pid, visit, new_role = "id") |>
-    step_impute_mean(all_numeric_predictors())
-
-# Train control for leave-one-subject-out cross-validation
-loso_control <- trainControl(
-    method = "cv",
-    number = length(subjects),
-    index = loso_index,
-    indexOut = loso_index_out,
-    search = "grid",
-    savePredictions = "final",
-    allowParallel = FALSE
-)
 
 # Explicit tuning grid
 mtry_grid <- expand.grid(
     mtry = unique(pmax(
         1L,
         round(seq(
-            from = 2,
+            from = 1,
             to = sqrt(length(predictor_names)) * 2
         ))
     ))
 )
 
-# Train model. If running on jpas Linux workstation, cache model object in
-# /dev/shm (RAM) for faster reruns (fitting the model takes a while).
-train_model <- function() {
-    set.seed(72929)
-    cat("Fitting model using leave-one-subject-out cross-validation\n")
-    cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")), "\n")
-    cat("May take a while... Please be patient\n")
-    fit <- train(
-        rf_recipe,
-        data = data_pred_3c,
+inner_k <- 5L
+rf_ntree <- 1000L
+
+# Make approximately equal-sized folds of subjects. All visits from a subject
+# are assigned to the same fold.
+make_subject_folds <- function(pid, k, seed) {
+    fold_subjects <- unique(as.character(pid))
+    k <- min(k, length(fold_subjects))
+
+    set.seed(seed)
+    fold_assignment <- sample(rep(seq_len(k), length.out = length(fold_subjects)))
+    fold_assignment <- set_names(fold_assignment, fold_subjects)
+
+    index_out <- map(seq_len(k), function(fold) {
+        which(fold_assignment[as.character(pid)] == fold)
+    }) |>
+        set_names(paste0("Fold", seq_len(k)))
+
+    index <- map(index_out, ~ setdiff(seq_along(pid), .x))
+
+    list(index = index, index_out = index_out)
+}
+
+# Recipe instantiated separately in every outer loop. Consequently, mean
+# imputation is estimated using only the corresponding training observations.
+make_rf_recipe <- function(data) {
+    recipe(class ~ ., data = data) |>
+        update_role(pid, visit, new_role = "id") |>
+        step_impute_mean(all_numeric_predictors())
+}
+
+# Fit one inner subject-blocked CV model and select mtry by mean accuracy.
+fit_inner_cv <- function(data, seed, importance = FALSE) {
+    folds <- make_subject_folds(data$pid, k = inner_k, seed = seed)
+
+    control <- trainControl(
+        method = "cv",
+        number = length(folds$index),
+        index = folds$index,
+        indexOut = folds$index_out,
+        search = "grid",
+        savePredictions = "none",
+        allowParallel = FALSE
+    )
+
+    set.seed(seed)
+    train(
+        make_rf_recipe(data),
+        data = data,
         method = "rf",
         metric = "Accuracy",
-        trControl = loso_control,
+        trControl = control,
         tuneGrid = mtry_grid,
-        ntree = 1000,
-        importance = TRUE,
+        ntree = rf_ntree,
+        importance = importance,
         keep.forest = TRUE
     )
-    cat("Model fitting completed\n")
-    return(fit)
 }
 
-rf_model_cache_file <- "/dev/shm/2026_st_brasier_rf_model_loso.rds"
+# Outer LOSO estimates performance. mtry is selected independently inside each
+# outer training set, without using the held-out subject.
+run_nested_loso <- function() {
+    prediction_list <- vector("list", length(subjects))
+    tuning_list <- vector("list", length(subjects))
+
+    cat("Fitting nested subject-blocked random forest models\n")
+    cat("Outer resampling: leave one subject out\n")
+    cat("Inner resampling:", inner_k, "subject-blocked folds\n")
+    cat("mtry tuning grid:", paste(mtry_grid$mtry, collapse = ", "), "\n")
+    cat("May take a while... Please be patient\n")
+
+    for (i in seq_along(subjects)) {
+        outer_subject <- subjects[i]
+        outer_index <- which(data_pred_3c$pid == outer_subject)
+        outer_training <- data_pred_3c[-outer_index, , drop = FALSE]
+        outer_validation <- data_pred_3c[outer_index, , drop = FALSE]
+
+        cat(
+            "Outer fold", i, "of", length(subjects),
+            "- held-out subject", outer_subject, "\n"
+        )
+
+        outer_fit <- fit_inner_cv(
+            data = outer_training,
+            seed = 72929L + i
+        )
+
+        prediction_list[[i]] <- tibble(
+            pid = outer_validation$pid,
+            visit = outer_validation$visit,
+            rowIndex = outer_index,
+            Resample = paste0("Outer_Subject_", outer_subject),
+            observed = outer_validation$class,
+            predicted = predict(outer_fit, newdata = outer_validation)
+        )
+
+        tuning_list[[i]] <- outer_fit$results |>
+            mutate(
+                OuterSubject = outer_subject,
+                Selected = mtry == outer_fit$bestTune$mtry,
+                .before = 1
+            )
+    }
+
+    cat("Nested model fitting completed\n")
+
+    list(
+        predictions = bind_rows(prediction_list) |> arrange(rowIndex),
+        tuning = bind_rows(tuning_list)
+    )
+}
+
+# Fit a separate model on all subjects for variable importance. Its tuning
+# results are not used to estimate predictive performance.
+fit_final_model <- function() {
+    cat("Tuning and fitting final model on all subjects\n")
+    fit_inner_cv(data = data_pred_3c, seed = 82929L, importance = TRUE)
+}
+
+# If running on jpas Linux workstation, cache the nested predictions, tuning
+# results and final model in RAM for faster reruns.
+rf_model_cache_file <- "/dev/shm/2026_st_brasier_rf_nested_loso.rds"
+
+run_rf_analysis <- function() {
+    nested <- run_nested_loso()
+    nested$final_model <- fit_final_model()
+    nested
+}
+
 if (is_jpas_desktop) {
     if (file.exists(rf_model_cache_file)) {
-        model_rf_loso <- readRDS(rf_model_cache_file)
+        rf_analysis <- readRDS(rf_model_cache_file)
     } else {
-        model_rf_loso <- train_model()
-        saveRDS(model_rf_loso, rf_model_cache_file)
+        rf_analysis <- run_rf_analysis()
+        saveRDS(rf_analysis, rf_model_cache_file)
     }
 } else {
-    model_rf_loso <- train_model()
+    rf_analysis <- run_rf_analysis()
 }
 
-# Selected mtry (hyperparameter that controls the number of variables to
-# consider at each split)
-cat("Selected mtry:", model_rf_loso$bestTune$mtry, "\n")
+# Outer-fold predictions and tuning results
+loso_predictions <- rf_analysis$predictions
+outer_tuning_results <- rf_analysis$tuning
+outer_selected_mtry <- outer_tuning_results |>
+    filter(Selected) |>
+    select(OuterSubject, mtry, Accuracy, Kappa)
 
-# Note: mtry=2 is selected even if we try a larger grid (2,3,...,51)
+# Final model used only for variable importance or future prediction
+model_rf_final <- rf_analysis$final_model
+final_tuning_results <- model_rf_final$results |>
+    mutate(Selected = mtry == model_rf_final$bestTune$mtry)
+
+stopifnot(
+    nrow(loso_predictions) == nrow(data_pred_3c),
+    !anyDuplicated(loso_predictions$rowIndex),
+    setequal(loso_predictions$rowIndex, seq_len(nrow(data_pred_3c))),
+    all(loso_predictions$pid == data_pred_3c$pid[loso_predictions$rowIndex]),
+    all(loso_predictions$observed ==
+        data_pred_3c$class[loso_predictions$rowIndex])
+)
+
+cat("Outer-fold selected mtry values:\n")
+kable(outer_selected_mtry)
+cat("Final-model selected mtry:", model_rf_final$bestTune$mtry, "\n")
 
 # ── Results of the 3-class model ─────────────────────────────────────────────
-
-# Extract predictions and arrange them in the original order
-loso_predictions <- model_rf_loso$pred |>
-    arrange(rowIndex) |>
-    mutate(
-        pid = data_pred_3c$pid[rowIndex],
-        visit = data_pred_3c$visit[rowIndex]
-    ) |>
-    select(
-        pid,
-        visit,
-        rowIndex,
-        Resample,
-        observed = obs,
-        predicted = pred,
-        everything()
-    )
 
 # Store each subject's predictions once (we will resample subjects to calculate
 # bootstrap confidence intervals for performance metrics)
@@ -489,7 +565,7 @@ kable(metrics_table, digits = 4)
 
 # Extract class-specific importance (long format)
 varimp_class <- varImp(
-    model_rf_loso,
+    model_rf_final,
     scale = TRUE
 )$importance |>
     rownames_to_column("predictor") |>
@@ -528,6 +604,10 @@ figure3
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `Confusion Matrix` = as.data.frame(confusion_matrix),
     `Performance Metrics` = metrics_table,
+    `Outer Predictions` = loso_predictions,
+    `Outer Selected mtry` = outer_selected_mtry,
+    `Outer Tuning Results` = outer_tuning_results,
+    `Final Tuning Results` = final_tuning_results,
     `Variable Importance` = varimp_class
 ))
 
