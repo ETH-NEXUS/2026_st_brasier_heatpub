@@ -37,11 +37,12 @@ if (length(missing_pkgs) > 0) {
     }
 }
 
-.null <- lapply(pkgs, require, character.only = TRUE)
+.null <- lapply(pkgs, \(pkg) suppressPackageStartupMessages(
+    require(pkg, character.only = TRUE)))
 
 # ── Set project root directory using the `here` package ──────────────────────
 
-i_am("code/so_prediction_rev.R")
+suppressMessages(i_am("code/so_prediction_rev.R"))
 
 # ── Data location ────────────────────────────────────────────────────────────
 
@@ -67,11 +68,15 @@ if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 # ── Load data ────────────────────────────────────────────────────────────────
 
 load_data <- function(data_dir, envir = .GlobalEnv) {
+    t0 <- Sys.time()
+    cat("Loading data from:", data_dir, "\n")
     datasets <- c("data_eCRFbased", "ts_ecel", "ts_holt", "ts_ibutton")
     for (dataset in datasets) {
         file_path <- file.path(data_dir, paste0(dataset, ".RData"))
         load(file_path, envir = envir)
     }
+    cat("Data loading completed in", round(Sys.time() - t0, 1), "seconds\n")
+    cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 }
 
 # If running on jpas Linux workstation, cache data in /dev/shm (RAM) for
@@ -211,7 +216,7 @@ data_pred_3c <- data_pred |>
     rename(class = heatstress_type) |>
     mutate(
         pid = factor(pid),
-        class = factor(class),
+        class = factor(gsub(" +", ".", class)),
         across(where(is.numeric), as.numeric)
     )
 
@@ -228,6 +233,10 @@ predictor_names <- setdiff(
     names(data_pred_3c),
     c("pid", "visit", "class")
 )
+
+# class levels
+class_levels <- levels(data_pred_3c$class)
+class_indices <- setNames(seq_along(class_levels), class_levels)
 
 # ── Leave-one-subject-out resampling ─────────────────────────────────────────
 
@@ -262,6 +271,7 @@ loso_control <- trainControl(
     indexOut = loso_index_out,
     search = "grid",
     savePredictions = "final",
+    classProbs = TRUE,
     allowParallel = FALSE
 )
 
@@ -284,6 +294,7 @@ train_model <- function() {
     cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")),
         "\n")
     cat("May take a while... Please be patient\n")
+    t0 <- Sys.time()
     fit <- train(
         rf_recipe,
         data = data_pred_3c,
@@ -295,7 +306,8 @@ train_model <- function() {
         importance = TRUE,
         keep.forest = TRUE
     )
-    cat("Model fitting completed\n")
+    cat("Model fitting completed in", round(Sys.time() - t0, 1), "seconds\n")
+    cat("\n", paste(rep("─", 70), collapse = ""), "\n")
     return(fit)
 }
 
@@ -314,6 +326,7 @@ if (is_jpas_desktop) {
 # Selected mtry (hyperparameter that controls the number of variables to
 # consider at each split)
 cat("Selected mtry:", model_rf_loso$bestTune$mtry, "\n")
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Note: mtry=2 is selected even if we try a larger grid (2,3,...,51)
 
@@ -329,55 +342,58 @@ loso_predictions <- model_rf_loso$pred |>
     select(
         pid,
         visit,
-        rowIndex,
-        Resample,
         observed = obs,
         predicted = pred,
-        everything()
+        all_of(class_levels)
     )
-
-# Store each subject's predictions once (we will resample subjects to calculate
-# bootstrap confidence intervals for performance metrics)
-predictions_by_subject <- split(
-    loso_predictions,
-    loso_predictions$pid
-)
-
-# Precompute the confusion counts for each subject. Rows of a confusion matrix
-# are predicted classes and columns are observed classes, as in caret.
-subject_ids <- unique(loso_predictions$pid)
-class_levels <- levels(loso_predictions$observed)
-n_classes <- length(class_levels)
-
-subject_confusions <- predictions_by_subject[as.character(subject_ids)] |>
-    map(function(x) {
-        table(
-            factor(x$predicted, levels = class_levels),
-            factor(x$observed, levels = class_levels)
-        ) |>
-            as.vector()
-    }) |>
-    do.call(what = rbind)
 
 # Confusion matrix
-confusion_matrix <- matrix(
-    colSums(subject_confusions),
-    nrow = n_classes,
-    ncol = n_classes,
-    dimnames = list(
-        predicted = class_levels,
-        observed = class_levels
-    )
-)
+confusion_matrix <- with(loso_predictions, table(predicted, observed))
 
-cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 cat("Confusion matrix:")
 kable(confusion_matrix)
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
-# Function to calculate performance metrics directly from a confusion matrix.
-# This function will be used for bootstrapping and is much more efficient than
-# using caret::confusionMatrix() repeatedly.
-metrics_from_confusion <- function(confusion) {
+# Row indices for each subject (for bootstrapping)
+subject_ids <- unique(loso_predictions$pid)
+
+prediction_rows_by_subject <- split(
+    seq_len(nrow(loso_predictions)),
+    loso_predictions$pid
+)[as.character(subject_ids)]
+
+# Matrices for computing performance metrics
+response_matrix <- outer(loso_predictions$observed, class_levels, `==`)
+colnames(response_matrix) <- class_levels
+prediction_matrix <- outer(loso_predictions$predicted, class_levels, `==`)
+colnames(prediction_matrix) <- class_levels
+probability_matrix <- as.matrix(loso_predictions[, class_levels])
+
+# Function to calculate the AUC using rank-based method (Mann–Whitney U
+# statistic)
+auc <- function(response, probability) {
+    n1 <- sum(response)
+    n0 <- sum(!response)
+    if (n1 == 0L || n0 == 0L) return(NA_real_)
+    r <- rank(probability, ties.method = "average")
+    sum_r_pos <- sum(r[response])
+    (sum_r_pos - n1 * (n1 + 1) / 2) / (n1 * n0)
+}
+
+# Function to calculate performance metrics. This function will be used for
+# bootstrapping and is much more efficient than using caret::confusionMatrix()
+# repeatedly.
+# Arguments:
+#   rows: indices of selected rows from loso_predictions
+# Output:
+#   named vector of performance metrics
+metrics_from_predictions <- function(rows) {
+    response <- response_matrix[rows, ]
+    prediction <- prediction_matrix[rows, ]
+    probability <- probability_matrix[rows, ]
+
+    confusion <- t(prediction) %*% response
+
     total <- sum(confusion)
     true_positive <- diag(confusion)
     false_positive <- rowSums(confusion) - true_positive
@@ -395,25 +411,49 @@ metrics_from_confusion <- function(confusion) {
         (pos_pred_value + sensitivity)
     balanced_accuracy <- (sensitivity + specificity) / 2
 
+    eps <- 1e-15
+    clipped_probability <- pmin(pmax(probability, eps), 1 - eps)
+
+    overall_brier <- mean(rowSums((response - probability)^2))
+    overall_logloss <- -mean(log(clipped_probability[response]))
+
+    auc <- sapply(class_indices, \(j) {
+        auc(response[, j], probability[, j])
+    })
+    brier <- sapply(class_indices, \(j) {
+        mean((response[, j] - probability[, j])^2)
+    })
+    logloss <- sapply(class_indices, \(j) {
+        -mean(response[, j] * log(clipped_probability[, j]) +
+              (!response[, j]) * log(1 - clipped_probability[, j]))
+    })
+
     by_class <- cbind(
         "Sensitivity" = sensitivity,
         "Specificity" = specificity,
         "Pos Pred Value" = pos_pred_value,
         "Neg Pred Value" = neg_pred_value,
         "F1" = f1,
-        "Balanced Accuracy" = balanced_accuracy
+        "Balanced Accuracy" = balanced_accuracy,
+        "AUC" = auc,
+        "Brier Score" = brier,
+        "Log Loss" = logloss
     )
 
     macro <- colMeans(by_class, na.rm = TRUE)
 
     result <- c(
         sum(true_positive) / total,
+        overall_brier,
+        overall_logloss,
         as.vector(t(by_class)),
         macro
     )
 
     metric_names <- c(
         "Overall | Accuracy",
+        "Overall | Multiclass Brier Score",
+        "Overall | Multiclass Log Loss",
         as.vector(t(outer(
             paste("Class:", class_levels),
             colnames(by_class),
@@ -432,24 +472,24 @@ set.seed(46742309)
 B <- 10000
 
 boot_all_metrics <- function(data, indices) {
-    confusion <- matrix(
-        colSums(subject_confusions[indices, , drop = FALSE]),
-        nrow = n_classes,
-        ncol = n_classes,
-        dimnames = list(
-            predicted = class_levels,
-            observed = class_levels
-        )
+    sampled_subjects <- as.character(data[indices])
+
+    rows <- unlist(
+        prediction_rows_by_subject[sampled_subjects],
+        use.names = FALSE
     )
 
-    metrics_from_confusion(confusion)
+    metrics_from_predictions(rows)
 }
 
+cat("Bootstrapping performance metrics with", B, "replicates...\n")
+t0 <- Sys.time()
 boot_out <- boot(
     data = subject_ids,
     statistic = boot_all_metrics,
     R = B
 )
+cat("Bootstrapping completed in", round(Sys.time() - t0, 1), "seconds\n\n")
 
 # Calculate percentile interval for each metric
 metrics_table <- map_dfr(
@@ -483,9 +523,9 @@ metrics_table <- map_dfr(
         )
     }
 )
-cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 cat("Performance metrics:")
 kable(metrics_table, digits = 4)
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # ── Variable importance ──────────────────────────────────────────────────────
 
@@ -505,7 +545,6 @@ varimp_class <- varImp(
     ungroup()
 
 # Top variables per class
-cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 cat("Top 10 variables per class:")
 varimp_class |>
     group_by(class) |>
@@ -513,6 +552,7 @@ varimp_class |>
     slice_head(n = 10) |>
     ungroup() |>
     kable()
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Figure 3
 figure3 <- varimp_class |>
@@ -528,6 +568,7 @@ figure3
 # ── Export results ───────────────────────────────────────────────────────────
 
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
+    `Predictions` = loso_predictions,
     `Tuning Profile` = model_rf_loso$results,
     `Confusion Matrix` = as.data.frame(confusion_matrix),
     `Performance Metrics` = metrics_table,
