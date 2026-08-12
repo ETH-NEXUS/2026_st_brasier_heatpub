@@ -1,9 +1,9 @@
 # ── Packages ─────────────────────────────────────────────────────────────────
 
 pkgs <- c(
-    "boot", "caret", "dplyr", "forcats", "ggplot2", "here", "knitr", "purrr",
-    "randomForest", "recipes", "stringr", "tibble", "tidyr", "tidytext",
-    "writexl"
+    "boot", "caret", "dplyr", "forcats", "ggplot2", "glmnet", "here", "knitr",
+    "purrr", "randomForest", "recipes", "stringr", "tibble", "tidyr",
+    "tidytext", "writexl"
 )
 
 missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
@@ -255,13 +255,21 @@ loso_index_out <- setNames(
     paste0("Subject_", subjects)
 )
 
-# Recipe with fold-specific imputation
+# Recipe with fold-specific imputation (and normalization for LASSO)
 rf_recipe <- recipe(
     class ~ .,
     data = data_pred_3c
 ) |>
     update_role(pid, visit, new_role = "id") |>
     step_impute_mean(all_numeric_predictors())
+
+lasso_recipe <- recipe(
+    class ~ .,
+    data = data_pred_3c
+) |>
+    update_role(pid, visit, new_role = "id") |>
+    step_impute_mean(all_numeric_predictors()) |>
+    step_normalize(all_numeric_predictors())
 
 # Train control for leave-one-subject-out cross-validation
 loso_control <- trainControl(
@@ -275,7 +283,7 @@ loso_control <- trainControl(
     allowParallel = FALSE
 )
 
-# Explicit tuning grid
+# Explicit tuning grids (for RF and LASSO)
 mtry_grid <- expand.grid(
     mtry = unique(pmax(
         1L,
@@ -286,11 +294,16 @@ mtry_grid <- expand.grid(
     ))
 )
 
-# Train model. If running on jpas Linux workstation, cache model object in
+lambda_grid <- expand.grid(
+    alpha = 1,
+    lambda = 10^seq(-4, 1, length.out = 50)
+)
+
+# Train models. If running on jpas Linux workstation, cache model object in
 # /dev/shm (RAM) for faster reruns (fitting the model takes a while).
-train_model <- function() {
+train_rf <- function() {
     set.seed(72929)
-    cat("Fitting model using leave-one-subject-out cross-validation\n")
+    cat("Fitting random forest using leave-one-subject-out cross-validation\n")
     cat(paste0("mtry tuning grid: ", paste(mtry_grid$mtry, collapse = ", ")),
         "\n")
     cat("May take a while... Please be patient\n")
@@ -311,21 +324,50 @@ train_model <- function() {
     return(fit)
 }
 
-rf_model_cache_file <- "/dev/shm/2026_st_brasier_rf_model_loso.rds"
-if (is_jpas_desktop) {
-    if (file.exists(rf_model_cache_file)) {
-        model_rf_loso <- readRDS(rf_model_cache_file)
-    } else {
-        model_rf_loso <- train_model()
-        saveRDS(model_rf_loso, rf_model_cache_file)
-    }
-} else {
-    model_rf_loso <- train_model()
+train_lasso <- function() {
+    set.seed(9047549)
+    cat("Fitting multinomial LASSO logistic regression using",
+        "leave-one-subject-out cross-validation\n")
+    cat(paste0("lambda tuning grid: ",
+               paste(sprintf("%.5f", lambda_grid$lambda), collapse = ", "),
+                "\n"))
+    cat("May take a while... Please be patient\n")
+    t0 <- Sys.time()
+    fit <- train(
+        lasso_recipe,
+        data = data_pred_3c,
+        method = "glmnet",
+        metric = "Accuracy",
+        trControl = loso_control,
+        tuneGrid = lambda_grid,
+        family = "multinomial"
+    )
+    cat("Model fitting completed in", round(Sys.time() - t0, 1), "seconds\n")
+    cat("\n", paste(rep("─", 70), collapse = ""), "\n")
+    return(fit)
 }
 
-# Selected mtry (hyperparameter that controls the number of variables to
-# consider at each split)
-cat("Selected mtry:", model_rf_loso$bestTune$mtry, "\n")
+train_model <- function() {
+    rf <- train_rf()
+    lasso <- train_lasso()
+    list(rf = rf, lasso = lasso)
+}
+
+model_cache_file <- "/dev/shm/2026_st_brasier_models.rds"
+if (is_jpas_desktop) {
+    if (file.exists(model_cache_file)) {
+        model <- readRDS(model_cache_file)
+    } else {
+        model <- train_model()
+        saveRDS(model, model_cache_file)
+    }
+} else {
+    model <- train_model()
+}
+
+# Selected hyperparameters
+cat("Selected mtry:", model$rf$bestTune$mtry, "\n")
+cat("Selected lambda:", model$lasso$bestTune$lambda, "\n")
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Note: mtry=2 is selected even if we try a larger grid (2,3,...,51)
@@ -333,25 +375,42 @@ cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 # ── Results of the 3-class model ─────────────────────────────────────────────
 
 # Extract predictions and arrange them in the original order
-loso_predictions <- model_rf_loso$pred |>
-    arrange(rowIndex) |>
-    mutate(
-        pid = data_pred_3c$pid[rowIndex],
-        visit = data_pred_3c$visit[rowIndex]
-    ) |>
-    select(
-        pid,
-        visit,
-        observed = obs,
-        predicted = pred,
-        all_of(class_levels)
+loso_predictions <- map(names(model), \(model_name) {
+    model[[model_name]]$pred |>
+        arrange(rowIndex) |>
+        mutate(
+            pid = data_pred_3c$pid[rowIndex],
+            visit = data_pred_3c$visit[rowIndex]
+        ) |>
+        select(
+            pid,
+            visit,
+            observed = obs,
+            predicted = pred,
+            all_of(class_levels)
+        ) |>
+        rename_with(~ paste0(.x, "_", model_name), -c(pid, visit, observed))
+}) |>
+    reduce(full_join, by = c("pid", "visit", "observed"))
+
+loso_predictions_long <- loso_predictions |>
+    pivot_longer(
+        cols = -c(pid, visit, observed),
+        names_to = c(".value", "model"),
+        names_pattern = "(.*)_(rf|lasso)"
     )
 
-# Confusion matrix
-confusion_matrix <- with(loso_predictions, table(predicted, observed))
+# Confusion matrices
+confusion_matrix <- map(setNames(nm = names(model)), \(model_name) {
+    loso_predictions_long |>
+        filter(model == model_name) |>
+        with(table(observed, predicted))
+})
 
-cat("Confusion matrix:")
-kable(confusion_matrix)
+cat("Confusion matrix - Random Forest:")
+kable(confusion_matrix$rf)
+cat("\nConfusion matrix - Multinomial LASSO logistic regression:")
+kable(confusion_matrix$lasso)
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Row indices for each subject (for bootstrapping)
@@ -365,9 +424,20 @@ prediction_rows_by_subject <- split(
 # Matrices for computing performance metrics
 response_matrix <- outer(loso_predictions$observed, class_levels, `==`)
 colnames(response_matrix) <- class_levels
-prediction_matrix <- outer(loso_predictions$predicted, class_levels, `==`)
-colnames(prediction_matrix) <- class_levels
-probability_matrix <- as.matrix(loso_predictions[, class_levels])
+prediction_matrix <- map(setNames(nm = names(model)), ~ {
+    predicted <- loso_predictions_long |>
+        filter(model == .x) |>
+        pull(predicted)
+    m <- outer(predicted, class_levels, `==`)
+    colnames(m) <- class_levels
+    return(m)
+})
+probability_matrix <- map(setNames(nm = names(model)), ~ {
+        loso_predictions_long |>
+            filter(model == .x) |>
+            select(all_of(class_levels)) |>
+            as.matrix()
+})
 
 # Function to calculate the AUC using rank-based method (Mann–Whitney U
 # statistic)
@@ -388,82 +458,85 @@ auc <- function(response, probability) {
 # Output:
 #   named vector of performance metrics
 metrics_from_predictions <- function(rows) {
-    response <- response_matrix[rows, ]
-    prediction <- prediction_matrix[rows, ]
-    probability <- probability_matrix[rows, ]
+    do.call(base::c, map(names(model), \(model_name) {
+        response <- response_matrix[rows, ]
+        prediction <- prediction_matrix[[model_name]][rows, ]
+        probability <- probability_matrix[[model_name]][rows, ]
 
-    confusion <- t(prediction) %*% response
+        confusion <- t(prediction) %*% response
 
-    total <- sum(confusion)
-    true_positive <- diag(confusion)
-    false_positive <- rowSums(confusion) - true_positive
-    false_negative <- colSums(confusion) - true_positive
-    true_negative <- total - true_positive - false_positive - false_negative
+        total <- sum(confusion)
+        true_positive <- diag(confusion)
+        false_positive <- rowSums(confusion) - true_positive
+        false_negative <- colSums(confusion) - true_positive
+        true_negative <- total - true_positive - false_positive - false_negative
 
-    # A zero denominator produces NaN, matching caret for undefined metrics.
-    sensitivity <- true_positive / (true_positive + false_negative)
-    specificity <- true_negative / (true_negative + false_positive)
-    pos_pred_value <- true_positive / (true_positive + false_positive)
-    neg_pred_value <- true_negative / (true_negative + false_negative)
-    # caret defines F1 from precision and recall. In particular, F1 is
-    # undefined (rather than zero) when both are zero.
-    f1 <- 2 * pos_pred_value * sensitivity /
-        (pos_pred_value + sensitivity)
-    balanced_accuracy <- (sensitivity + specificity) / 2
+        # A zero denominator produces NaN, matching caret for undefined metrics.
+        sensitivity <- true_positive / (true_positive + false_negative)
+        specificity <- true_negative / (true_negative + false_positive)
+        pos_pred_value <- true_positive / (true_positive + false_positive)
+        neg_pred_value <- true_negative / (true_negative + false_negative)
+        # caret defines F1 from precision and recall. In particular, F1 is
+        # undefined (rather than zero) when both are zero.
+        f1 <- 2 * pos_pred_value * sensitivity /
+            (pos_pred_value + sensitivity)
+        balanced_accuracy <- (sensitivity + specificity) / 2
 
-    eps <- 1e-15
-    clipped_probability <- pmin(pmax(probability, eps), 1 - eps)
+        eps <- 1e-15
+        clipped_probability <- pmin(pmax(probability, eps), 1 - eps)
 
-    overall_brier <- mean(rowSums((response - probability)^2))
-    overall_logloss <- -mean(log(clipped_probability[response]))
+        overall_brier <- mean(rowSums((response - probability)^2))
+        overall_logloss <- -mean(log(clipped_probability[response]))
 
-    auc <- sapply(class_indices, \(j) {
-        auc(response[, j], probability[, j])
-    })
-    brier <- sapply(class_indices, \(j) {
-        mean((response[, j] - probability[, j])^2)
-    })
-    logloss <- sapply(class_indices, \(j) {
-        -mean(response[, j] * log(clipped_probability[, j]) +
-              (!response[, j]) * log(1 - clipped_probability[, j]))
-    })
+        auc <- sapply(class_indices, \(j) {
+            auc(response[, j], probability[, j])
+        })
+        brier <- sapply(class_indices, \(j) {
+            mean((response[, j] - probability[, j])^2)
+        })
+        logloss <- sapply(class_indices, \(j) {
+            -mean(response[, j] * log(clipped_probability[, j]) +
+                  (!response[, j]) * log(1 - clipped_probability[, j]))
+        })
 
-    by_class <- cbind(
-        "Sensitivity" = sensitivity,
-        "Specificity" = specificity,
-        "Pos Pred Value" = pos_pred_value,
-        "Neg Pred Value" = neg_pred_value,
-        "F1" = f1,
-        "Balanced Accuracy" = balanced_accuracy,
-        "AUC" = auc,
-        "Brier Score" = brier,
-        "Log Loss" = logloss
-    )
+        by_class <- cbind(
+            "Sensitivity" = sensitivity,
+            "Specificity" = specificity,
+            "Pos Pred Value" = pos_pred_value,
+            "Neg Pred Value" = neg_pred_value,
+            "F1" = f1,
+            "Balanced Accuracy" = balanced_accuracy,
+            "AUC" = auc,
+            "Brier Score" = brier,
+            "Log Loss" = logloss
+        )
 
-    macro <- colMeans(by_class, na.rm = TRUE)
+        macro <- colMeans(by_class, na.rm = TRUE)
 
-    result <- c(
-        sum(true_positive) / total,
-        overall_brier,
-        overall_logloss,
-        as.vector(t(by_class)),
-        macro
-    )
+        result <- c(
+            sum(true_positive) / total,
+            overall_brier,
+            overall_logloss,
+            as.vector(t(by_class)),
+            macro
+        )
 
-    metric_names <- c(
-        "Overall | Accuracy",
-        "Overall | Multiclass Brier Score",
-        "Overall | Multiclass Log Loss",
-        as.vector(t(outer(
-            paste("Class:", class_levels),
-            colnames(by_class),
-            paste,
-            sep = " | "
-        ))),
-        paste("Macro Average", colnames(by_class), sep = " | ")
-    )
+        metric_names <- c(
+            "Overall | Accuracy",
+            "Overall | Multiclass Brier Score",
+            "Overall | Multiclass Log Loss",
+            as.vector(t(outer(
+                paste("Class:", class_levels),
+                colnames(by_class),
+                paste,
+                sep = " | "
+            ))),
+            paste("Macro Average", colnames(by_class), sep = " | ")
+        )
+        metric_names <- paste(model_name, metric_names, sep = " | ")
 
-    set_names(result, metric_names)
+        set_names(result, metric_names)
+    }))
 }
 
 # Bootstrap statistic: resampling subjects ID
@@ -511,18 +584,25 @@ metrics_table <- map_dfr(
         metric_parts <- str_split_fixed(
             names(boot_out$t0)[i],
             fixed(" | "),
-            n = 2
+            n = 3
         )
 
         tibble(
-            Class = metric_parts[1],
-            Metric = metric_parts[2],
+            Model = metric_parts[1],
+            Class = metric_parts[2],
+            Metric = metric_parts[3],
             Estimate = unname(boot_out$t0[i]),
             Lower = ci$perc[1, 4],
             Upper = ci$perc[1, 5]
         )
     }
-)
+) |>
+    pivot_wider(
+        names_from = Model,
+        values_from = c(Estimate, Lower, Upper),
+        names_vary = "slowest"
+    )
+
 cat("Performance metrics:")
 kable(metrics_table, digits = 4)
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
@@ -531,7 +611,7 @@ cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Extract class-specific importance (long format)
 varimp_class <- varImp(
-    model_rf_loso,
+    model$rf,
     scale = TRUE
 )$importance |>
     rownames_to_column("predictor") |>
@@ -569,8 +649,10 @@ figure3
 
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `Predictions` = loso_predictions,
-    `Tuning Profile` = model_rf_loso$results,
-    `Confusion Matrix` = as.data.frame(confusion_matrix),
+    `Tuning Profile (RF)` = model$rf$results,
+    `Tuning Profile (LASSO)` = model$lasso$results,
+    `Confusion Matrix (RF)` = as.data.frame(confusion_matrix$rf),
+    `Confusion Matrix (LASSO)` = as.data.frame(confusion_matrix$lasso),
     `Performance Metrics` = metrics_table,
     `Variable Importance` = varimp_class
 ))
