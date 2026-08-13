@@ -400,6 +400,14 @@ loso_predictions_long <- loso_predictions |>
         names_pattern = "(.*)_(rf|lasso)"
     )
 
+# Both models must contribute exactly one prediction for every original row.
+stopifnot(
+    nrow(loso_predictions) == nrow(data_pred_3c),
+    nrow(loso_predictions_long) == 2L * nrow(data_pred_3c),
+    !anyDuplicated(loso_predictions[c("pid", "visit", "observed")]),
+    all(table(loso_predictions_long$model) == nrow(data_pred_3c))
+)
+
 # Confusion matrices
 confusion_matrix <- map(setNames(nm = names(model)), \(model_name) {
     loso_predictions_long |>
@@ -555,14 +563,29 @@ boot_all_metrics <- function(data, indices) {
     metrics_from_predictions(rows)
 }
 
-cat("Bootstrapping performance metrics with", B, "replicates...\n")
-t0 <- Sys.time()
-boot_out <- boot(
-    data = subject_ids,
-    statistic = boot_all_metrics,
-    R = B
-)
-cat("Bootstrapping completed in", round(Sys.time() - t0, 1), "seconds\n\n")
+run_bootstrap <- function() {
+    cat("Bootstrapping performance metrics with", B, "replicates...\n")
+    t0 <- Sys.time()
+    boot_out <- boot(
+        data = subject_ids,
+        statistic = boot_all_metrics,
+        R = B
+    )
+    cat("Bootstrapping completed in", round(Sys.time() - t0, 1), "seconds\n\n")
+    return(boot_out)
+}
+
+metric_bs_cache_file <- "/dev/shm/2026_st_brasier_metric_bs.rds"
+if (is_jpas_desktop) {
+    if (file.exists(metric_bs_cache_file)) {
+        boot_out <- readRDS(metric_bs_cache_file)
+    } else {
+        boot_out <- run_bootstrap()
+        saveRDS(boot_out, metric_bs_cache_file)
+    }
+} else {
+    boot_out <- run_bootstrap()
+}
 
 # Calculate percentile interval for each metric
 metrics_table <- map_dfr(
@@ -603,8 +626,46 @@ metrics_table <- map_dfr(
         names_vary = "slowest"
     )
 
+# Paired differences use the same held-out observations and the same bootstrap
+# subject samples for both models. Positive differences favour RF for metrics
+# where higher is better; negative differences favour RF for loss metrics.
+rf_metric_indices <- grep("^rf \\| ", names(boot_out$t0))
+metric_keys <- sub("^rf \\| ", "", names(boot_out$t0)[rf_metric_indices])
+lasso_metric_indices <- match(
+    paste("lasso", metric_keys, sep = " | "),
+    names(boot_out$t0)
+)
+
+stopifnot(!anyNA(lasso_metric_indices))
+
+model_difference_table <- map_dfr(seq_along(metric_keys), function(i) {
+    bootstrap_difference <-
+        boot_out$t[, rf_metric_indices[i]] -
+        boot_out$t[, lasso_metric_indices[i]]
+    interval <- quantile(
+        bootstrap_difference,
+        probs = c(0.025, 0.975),
+        na.rm = TRUE,
+        names = FALSE,
+        type = 6   # corresponds to boot.ci(type = "perc")
+    )
+    metric_parts <- str_split_fixed(metric_keys[i], fixed(" | "), n = 2)
+
+    tibble(
+        Class = metric_parts[1],
+        Metric = metric_parts[2],
+        Difference_RF_minus_LASSO =
+            unname(boot_out$t0[rf_metric_indices[i]]) -
+            unname(boot_out$t0[lasso_metric_indices[i]]),
+        Lower = interval[1],
+        Upper = interval[2]
+    )
+})
+
 cat("Performance metrics:")
 kable(metrics_table, digits = 4)
+cat("\nPaired performance differences (RF minus LASSO):")
+kable(model_difference_table, digits = 4)
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # ── Variable importance ──────────────────────────────────────────────────────
@@ -654,6 +715,7 @@ write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `Confusion Matrix (RF)` = as.data.frame(confusion_matrix$rf),
     `Confusion Matrix (LASSO)` = as.data.frame(confusion_matrix$lasso),
     `Performance Metrics` = metrics_table,
+    `Paired Model Differences` = model_difference_table,
     `Variable Importance` = varimp_class
 ))
 
