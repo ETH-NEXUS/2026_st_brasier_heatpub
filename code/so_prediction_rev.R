@@ -2,8 +2,8 @@
 
 pkgs <- c(
     "boot", "caret", "dplyr", "forcats", "ggplot2", "glmnet", "here", "knitr",
-    "purrr", "randomForest", "recipes", "stabm", "stringr", "tibble", "tidyr",
-    "tidytext", "writexl"
+    "parallel", "purrr", "randomForest", "recipes", "stabm", "stringr",
+    "tibble", "tidyr", "tidytext", "writexl"
 )
 
 missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
@@ -40,6 +40,101 @@ if (length(missing_pkgs) > 0) {
 .null <- lapply(pkgs, \(pkg) suppressPackageStartupMessages(
     require(pkg, character.only = TRUE)))
 
+# ── Parallel bootstraping ────────────────────────────────────────────────────
+
+# Set RNG type to L'Ecuyer-CMRG for reproducibility in parallel processing
+RNGkind("L'Ecuyer-CMRG")
+
+# Parallel bootstrap function
+parallel_boot <- function(data, statistic, R, seed, n_cores) {
+
+    stopifnot(RNGkind()[1] == "L'Ecuyer-CMRG")
+
+    set.seed(seed)
+
+    # Save the RNG state at the start, as boot() does
+    boot_seed <- .Random.seed
+
+    n <- NROW(data)
+
+    # Observed statistic
+    t0 <- statistic(data, seq_len(n))
+
+    # Generate bootstrap samples deterministically in the master process
+    bootstrap_indices <- replicate(
+        R,
+        sample.int(
+            n = n,
+            size = n,
+            replace = TRUE
+        ),
+        simplify = FALSE
+    )
+
+    # Generate one independent RNG stream per bootstrap replicate
+    rng_streams <- vector("list", R)
+
+    rng_streams[[1]] <- .Random.seed
+
+    if (R > 1) {
+        for (r in 2:R) {
+            rng_streams[[r]] <- nextRNGStream(rng_streams[[r - 1]])
+        }
+    }
+
+    boot_function <- function(r) {
+
+        # Important when mc.cores = 1:
+        # avoid leaving the caller's RNG state changed
+        old_seed <- .Random.seed
+        on.exit(
+            assign(".Random.seed", old_seed, envir = .GlobalEnv),
+            add = TRUE
+        )
+
+        assign(
+            ".Random.seed",
+            rng_streams[[r]],
+            envir = .GlobalEnv
+        )
+
+        statistic(
+            data,
+            bootstrap_indices[[r]]
+        )
+    }
+
+    results <- mclapply(
+        X = seq_len(R),
+        FUN = boot_function,
+        mc.cores = n_cores,
+        mc.set.seed = FALSE   # we manage the RNG ourselves
+    )
+
+    t <- do.call(rbind, results)
+
+    out <- list(
+        t0 = t0,
+        t = t,
+        R = R,
+        data = data,
+        seed = boot_seed,
+        statistic = statistic,
+        sim = "ordinary",
+        stype = "i",
+        call = match.call(),
+        strata = rep(1L, n),
+        weights = rep(1 / n, n),
+
+        # Extra information
+        bootstrap_indices = bootstrap_indices
+    )
+
+    class(out) <- "boot"
+
+    out
+}
+
 # ── Set project root directory using the `here` package ──────────────────────
 
 suppressMessages(i_am("code/so_prediction_rev.R"))
@@ -68,14 +163,15 @@ if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 # ── Load data ────────────────────────────────────────────────────────────────
 
 load_data <- function(data_dir, envir = .GlobalEnv) {
-    t0 <- Sys.time()
     cat("Loading data from:", data_dir, "\n")
     datasets <- c("data_eCRFbased", "ts_ecel", "ts_holt", "ts_ibutton")
+    t0 <- Sys.time()
     for (dataset in datasets) {
         file_path <- file.path(data_dir, paste0(dataset, ".RData"))
         load(file_path, envir = envir)
     }
-    cat("Data loading completed in", round(Sys.time() - t0, 1), "seconds\n")
+    elapsed <- difftime(Sys.time(), t0, units = "secs")
+    cat("Data loading completed in", round(elapsed, 1), "seconds\n")
     cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 }
 
@@ -319,7 +415,8 @@ train_rf <- function() {
         importance = TRUE,
         keep.forest = TRUE
     )
-    cat("Model fitting completed in", round(Sys.time() - t0, 1), "seconds\n")
+    elapsed <- difftime(Sys.time(), t0, units = "secs")
+    cat("Model fitting completed in", round(elapsed, 1), "seconds\n")
     cat("\n", paste(rep("─", 70), collapse = ""), "\n")
     return(fit)
 }
@@ -342,7 +439,8 @@ train_lasso <- function() {
         tuneGrid = lambda_grid,
         family = "multinomial"
     )
-    cat("Model fitting completed in", round(Sys.time() - t0, 1), "seconds\n")
+    elapsed <- difftime(Sys.time(), t0, units = "secs")
+    cat("Model fitting completed in", round(elapsed, 1), "seconds\n")
     cat("\n", paste(rep("─", 70), collapse = ""), "\n")
     return(fit)
 }
@@ -559,18 +657,24 @@ boot_all_metrics <- function(data, indices) {
     metrics_from_predictions(rows)
 }
 
-run_metric_bootstrap <- function(B = 10000, seed = 46742309) {
-    set.seed(seed)
-
+run_metric_bootstrap <- function(
+    B = 10000,
+    seed = 46742309,
+    n_cores = detectCores()
+) {
     cat("Bootstrapping performance metrics with", B, "replicates...\n")
     cat("May take a while... Please be patient\n")
     t0 <- Sys.time()
-    boot_out <- boot(
+    boot_out <- parallel_boot(
         data = subject_ids,
         statistic = boot_all_metrics,
-        R = B
+        R = B,
+        seed = seed,
+        n_cores = n_cores
     )
-    cat("Bootstrapping completed in", round(Sys.time() - t0, 1), "seconds\n\n")
+    elapsed <- difftime(Sys.time(), t0, units = "secs")
+    cat("Bootstrapping completed in", round(elapsed, 1), "seconds using",
+        n_cores, "cores\n\n")
     return(boot_out)
 }
 
@@ -740,9 +844,11 @@ k_by_class <- sapply(class_levels, function(cl) {
 })
 
 # Bootstrap the variable selection
-run_variable_selection_bootstrap <- function(B = 2000, seed = 135790) {
-    set.seed(seed)
-
+run_variable_selection_bootstrap <- function(
+    B = 2000,
+    seed = 135790,
+    n_cores = detectCores()
+){
     mtry_fixed   <- model$rf$bestTune$mtry
     ntree_fixed  <- 1000
 
@@ -786,14 +892,16 @@ run_variable_selection_bootstrap <- function(B = 2000, seed = 135790) {
     cat("May take a while... (Up to 5 minutes on a single core computer)",
         "Please be patient\n")
     t0 <- Sys.time()
-    boot_varsel <- boot(
+    boot_varsel <- parallel_boot(
         data = subject_ids,
         statistic = boot_variable_selection,
-        R = B
+        R = B,
+        seed = seed,
+        n_cores = n_cores
     )
     elapsed <- Sys.time() - t0
     cat("Bootstrapping completed in", round(elapsed, 1),
-        attr(elapsed, "units"), "\n\n")
+        attr(elapsed, "units"), "using", n_cores, "cores\n\n")
 
     return(boot_varsel)
 }
