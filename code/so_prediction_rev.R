@@ -668,53 +668,78 @@ cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # ── Variable importance ──────────────────────────────────────────────────────
 
-# Extract class-specific importance (long format)
-varimp_class <- varImp(
-    model$rf,
-    scale = TRUE
-)$importance |>
+# Extract class-specific importance from the RF model (long format)
+rf_importance <- model$rf$finalModel |>
+    importance(scale = FALSE) |>
+    as.data.frame() |>
     rownames_to_column("predictor") |>
+    select(predictor, all_of(class_levels)) |>
     pivot_longer(
         cols = -predictor,
         names_to = "class",
         values_to = "importance"
     ) |>
-    group_by(class) |>
-    arrange(desc(importance), .by_group = TRUE) |>
-    ungroup()
+    arrange(class, desc(importance))
 
 # Top variables per class
-cat("Top 10 variables per class:")
-varimp_class |>
+cat("Top 5 variables per class:")
+rf_importance |>
     group_by(class) |>
     arrange(desc(importance), .by_group = TRUE) |>
-    slice_head(n = 10) |>
+    slice_head(n = 5) |>
     ungroup() |>
     kable()
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Figure 3
-figure3 <- varimp_class |>
+figure3 <- rf_importance |>
     mutate(predictor_plot = reorder_within(predictor, importance, class)) |>
     ggplot(aes(x = importance, y = predictor_plot)) +
     geom_point() +
     scale_y_reordered() +
     facet_wrap(vars(class), scales = "free_y", nrow = 1) +
-    labs(x = "Variable importance (scaled)", y = "Predictor") +
+    labs(x = "Variable importance (unscaled)", y = "Predictor") +
     theme_bw()
 figure3
+
+# Coefficients of the LASSO model
+lasso_importance <- coef(
+    model$lasso$finalModel,
+    s = model$lasso$bestTune$lambda
+) |>
+    imap_dfr(\(coef_matrix, class_name) {
+        tibble(
+            class = class_name,
+            predictor = rownames(coef_matrix),
+            coefficient = as.numeric(coef_matrix)
+        )
+    }) |>
+    filter(predictor != "(Intercept)") |>
+    mutate(
+        importance = abs(coefficient),
+        selected = coefficient != 0
+    ) |>
+    arrange(class, desc(importance))
+
+cat("LASSO variable importance:")
+lasso_importance |>
+    filter(selected) |>
+    select(!selected) |>
+    kable(digits = 4)
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # ── Export results ───────────────────────────────────────────────────────────
 
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `Predictions` = loso_predictions,
-    `Tuning Profile (RF)` = model$rf$results,
-    `Tuning Profile (LASSO)` = model$lasso$results,
-    `Confusion Matrix (RF)` = as.data.frame(confusion_matrix$rf),
-    `Confusion Matrix (LASSO)` = as.data.frame(confusion_matrix$lasso),
+    `RF Tuning Profile` = model$rf$results,
+    `LASSO Tuning Profile` = model$lasso$results,
+    `RF Confusion Matrix` = as.data.frame(confusion_matrix$rf),
+    `LASSO Confusion Matrix` = as.data.frame(confusion_matrix$lasso),
     `Performance Metrics` = metrics_table,
     `Paired Model Differences` = model_difference_table,
-    `Variable Importance` = varimp_class
+    `RF Variable Importance` = rf_importance,
+    `LASSO Variable Importance` = lasso_importance
 ))
 
 ggsave(file.path(out_dir, "figure3.pdf"), figure3, width = 12, height = 8)
