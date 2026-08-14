@@ -548,10 +548,6 @@ metrics_from_predictions <- function(rows) {
 }
 
 # Bootstrap statistic: resampling subjects ID
-set.seed(46742309)
-
-B <- 10000
-
 boot_all_metrics <- function(data, indices) {
     sampled_subjects <- as.character(data[indices])
 
@@ -563,7 +559,9 @@ boot_all_metrics <- function(data, indices) {
     metrics_from_predictions(rows)
 }
 
-run_bootstrap <- function() {
+run_bootstrap <- function(B = 10000, seed = 46742309) {
+    set.seed(seed)
+
     cat("Bootstrapping performance metrics with", B, "replicates...\n")
     t0 <- Sys.time()
     boot_out <- boot(
