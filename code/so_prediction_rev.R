@@ -2,7 +2,7 @@
 
 pkgs <- c(
     "boot", "caret", "dplyr", "forcats", "ggplot2", "glmnet", "here", "knitr",
-    "purrr", "randomForest", "recipes", "stringr", "tibble", "tidyr",
+    "purrr", "randomForest", "recipes", "stabm", "stringr", "tibble", "tidyr",
     "tidytext", "writexl"
 )
 
@@ -559,10 +559,11 @@ boot_all_metrics <- function(data, indices) {
     metrics_from_predictions(rows)
 }
 
-run_bootstrap <- function(B = 10000, seed = 46742309) {
+run_metric_bootstrap <- function(B = 10000, seed = 46742309) {
     set.seed(seed)
 
     cat("Bootstrapping performance metrics with", B, "replicates...\n")
+    cat("May take a while... Please be patient\n")
     t0 <- Sys.time()
     boot_out <- boot(
         data = subject_ids,
@@ -576,34 +577,34 @@ run_bootstrap <- function(B = 10000, seed = 46742309) {
 metric_bs_cache_file <- "/dev/shm/2026_st_brasier_metric_bs.rds"
 if (is_jpas_desktop) {
     if (file.exists(metric_bs_cache_file)) {
-        boot_out <- readRDS(metric_bs_cache_file)
+        boot_metric <- readRDS(metric_bs_cache_file)
     } else {
-        boot_out <- run_bootstrap()
-        saveRDS(boot_out, metric_bs_cache_file)
+        boot_metric <- run_metric_bootstrap()
+        saveRDS(boot_metric, metric_bs_cache_file)
     }
 } else {
-    boot_out <- run_bootstrap()
+    boot_metric <- run_metric_bootstrap()
 }
 
 # Calculate percentile interval for each metric
 metrics_table <- map_dfr(
-    seq_along(boot_out$t0),
+    seq_along(boot_metric$t0),
     function(i) {
-        ci <- if (length(unique(boot_out$t[, i])) == 1L) {
+        ci <- if (length(unique(boot_metric$t[, i])) == 1L) {
             # If the bootstrap distribution is degenerate, return a pointwise
             # interval at the single value.
-            list(perc = matrix(c(rep(NA, 3), rep(boot_out$t0[i], 2)),
+            list(perc = matrix(c(rep(NA, 3), rep(boot_metric$t0[i], 2)),
                                nrow = 1))
         } else {
             boot.ci(
-                boot_out,
+                boot_metric,
                 type = "perc",
                 index = i
             )
         }
 
         metric_parts <- str_split_fixed(
-            names(boot_out$t0)[i],
+            names(boot_metric$t0)[i],
             fixed(" | "),
             n = 3
         )
@@ -612,7 +613,7 @@ metrics_table <- map_dfr(
             Model = metric_parts[1],
             Class = metric_parts[2],
             Metric = metric_parts[3],
-            Estimate = unname(boot_out$t0[i]),
+            Estimate = unname(boot_metric$t0[i]),
             Lower = ci$perc[1, 4],
             Upper = ci$perc[1, 5]
         )
@@ -627,19 +628,19 @@ metrics_table <- map_dfr(
 # Paired differences use the same held-out observations and the same bootstrap
 # subject samples for both models. Positive differences favour RF for metrics
 # where higher is better; negative differences favour RF for loss metrics.
-rf_metric_indices <- grep("^rf \\| ", names(boot_out$t0))
-metric_keys <- sub("^rf \\| ", "", names(boot_out$t0)[rf_metric_indices])
+rf_metric_indices <- grep("^rf \\| ", names(boot_metric$t0))
+metric_keys <- sub("^rf \\| ", "", names(boot_metric$t0)[rf_metric_indices])
 lasso_metric_indices <- match(
     paste("lasso", metric_keys, sep = " | "),
-    names(boot_out$t0)
+    names(boot_metric$t0)
 )
 
 stopifnot(!anyNA(lasso_metric_indices))
 
 model_difference_table <- map_dfr(seq_along(metric_keys), function(i) {
     bootstrap_difference <-
-        boot_out$t[, rf_metric_indices[i]] -
-        boot_out$t[, lasso_metric_indices[i]]
+        boot_metric$t[, rf_metric_indices[i]] -
+        boot_metric$t[, lasso_metric_indices[i]]
     interval <- quantile(
         bootstrap_difference,
         probs = c(0.025, 0.975),
@@ -653,8 +654,8 @@ model_difference_table <- map_dfr(seq_along(metric_keys), function(i) {
         Class = metric_parts[1],
         Metric = metric_parts[2],
         Difference_RF_minus_LASSO =
-            unname(boot_out$t0[rf_metric_indices[i]]) -
-            unname(boot_out$t0[lasso_metric_indices[i]]),
+            unname(boot_metric$t0[rf_metric_indices[i]]) -
+            unname(boot_metric$t0[lasso_metric_indices[i]]),
         Lower = interval[1],
         Upper = interval[2]
     )
@@ -728,6 +729,213 @@ lasso_importance |>
     kable(digits = 4)
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
+# ── Selection stability ──────────────────────────────────────────────────────
+
+# k per class = size of LASSO's original selected set for that class
+lambda_fixed <- model$lasso$bestTune$lambda
+orig_coefs <- coef(model$lasso$finalModel, s = lambda_fixed)
+k_by_class <- sapply(class_levels, function(cl) {
+    cf <- as.matrix(orig_coefs[[cl]])[predictor_names, 1]
+    sum(cf != 0)
+})
+
+# Bootstrap the variable selection
+run_variable_selection_bootstrap <- function(B = 2000, seed = 135790) {
+    set.seed(seed)
+
+    mtry_fixed   <- model$rf$bestTune$mtry
+    ntree_fixed  <- 1000
+
+    rows_by_subject <- split(seq_len(nrow(data_pred_3c)), data_pred_3c$pid)
+
+    boot_variable_selection <- function(data, indices) {
+        sampled_subjects <- as.character(data[indices])
+        rows <- unlist(rows_by_subject[sampled_subjects], use.names = FALSE)
+        boot_data <- data_pred_3c[rows, ]
+
+        # RF
+        rf_baked <- bake(prep(rf_recipe, training = boot_data),
+                         new_data = NULL)
+        rf_fit <- randomForest(
+            x = rf_baked[, predictor_names],
+            y = rf_baked$class,
+            mtry = mtry_fixed,
+            ntree = ntree_fixed,
+            importance = TRUE
+        )
+        rf_importance <- importance(rf_fit, scale = FALSE)[, class_levels]
+        rf_sel <- sapply(class_levels, \(cl) {
+            rank(-rf_importance[, cl]) <= k_by_class[cl]
+        })
+
+        # LASSO
+        lasso_baked <- bake(prep(lasso_recipe, training = boot_data),
+                            new_data = NULL)
+        x_mat <- as.matrix(lasso_baked[, predictor_names])
+        glmnet_fit <- glmnet(x_mat, lasso_baked$class, family = "multinomial",
+                              alpha = 1, lambda = lambda_fixed)
+        coefs <- coef(glmnet_fit, s = lambda_fixed)
+        lasso_sel <- sapply(class_levels, function(cl) {
+            as.matrix(coefs[[cl]])[predictor_names, 1] != 0
+        })
+
+        c(rf = as.vector(rf_sel), lasso = as.vector(lasso_sel))
+    }
+
+    cat("Bootstrapping variable selection with", B, "replicates...\n")
+    cat("May take a while... (Up to 5 minutes on a single core computer)",
+        "Please be patient\n")
+    t0 <- Sys.time()
+    boot_varsel <- boot(
+        data = subject_ids,
+        statistic = boot_variable_selection,
+        R = B
+    )
+    elapsed <- Sys.time() - t0
+    cat("Bootstrapping completed in", round(elapsed, 1),
+        attr(elapsed, "units"), "\n\n")
+
+    return(boot_varsel)
+}
+
+selection_bs_cache_file <- "/dev/shm/2026_st_brasier_selection_bs.rds"
+if (is_jpas_desktop) {
+    if (file.exists(selection_bs_cache_file)) {
+        boot_varsel <- readRDS(selection_bs_cache_file)
+    } else {
+        boot_varsel <- run_variable_selection_bootstrap()
+        saveRDS(boot_varsel, selection_bs_cache_file)
+    }
+} else {
+    boot_varsel <- run_variable_selection_bootstrap()
+}
+
+# Reshape boot_varsel$t into predictor × class × replicate
+selection_array <- local({
+    R     <- nrow(boot_varsel$t)       # number of bootstrap replicates
+    p     <- length(predictor_names)   # number of predictor variables
+    ncl   <- length(class_levels)      # number of class levels
+    block <- p * ncl                   # number of columns in boot_varsel$t
+                                       # for each model
+    rf_block    <- boot_varsel$t[, 1:block, drop = FALSE]
+    lasso_block <- boot_varsel$t[, (block + 1):(2 * block), drop = FALSE]
+
+    # each row is a column-major-flattened (p x ncl) matrix
+    # -> rebuild as p x ncl x R
+    to_array <- function(block_mat) {
+        array(
+            t(block_mat),
+            dim = c(p, ncl, R),
+            dimnames = list(predictor_names, class_levels, NULL)
+        )
+    }
+
+    list(rf = to_array(rf_block), lasso = to_array(lasso_block))
+})
+
+# Selection frequencies + paired differences (with CI)
+freq <- map(selection_array, \(ary) apply(ary, c(1, 2), mean))
+
+diff_array <- with(selection_array, rf - lasso)
+diff_mean <- apply(diff_array, c(1, 2), mean)
+diff_ci <- apply(diff_array, c(1, 2), quantile, c(0.025, 0.975))
+
+selection_comparison_table <- expand.grid(
+        Predictor = predictor_names,
+        Class     = class_levels,
+        stringsAsFactors = FALSE
+    ) |>
+    as_tibble() |>
+    mutate(
+        RF_Frequency    = as.vector(freq$rf),
+        LASSO_Frequency = as.vector(freq$lasso),
+        Difference_RF_minus_LASSO = as.vector(diff_mean),
+        Diff_Lower = as.vector(diff_ci[1, , ]),
+        Diff_Upper = as.vector(diff_ci[2, , ])
+    ) |>
+    arrange(Class, desc(RF_Frequency))
+
+cat("Selection frequency and paired RF-LASSO difference:")
+kable(selection_comparison_table, digits = 3)
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
+
+
+# Note: Diff_Lower/Diff_Upper excluding 0 flags a predictor where one model
+# reliably selects it more often than the other — real disagreement rather than
+# resampling noise.
+
+# Jaccard overlap: bootstrap distribution + point estimate
+jaccard <- function(a, b) {
+    inter <- sum(a & b)
+    uni   <- sum(a | b)
+    if (uni == 0) return(NA_real_)
+    inter / uni
+}
+
+# bootstrap distribution, per class (matrix R x ncl)
+jaccard_boot <- sapply(class_levels, function(cl) {
+    R <- dim(selection_array$rf)[3]
+    sapply(seq_len(R), \(r) {
+        with(selection_array, jaccard(rf[, cl, r] == 1, lasso[, cl, r] == 1))
+    })
+})
+
+# point estimate from the original (non-bootstrapped) fit
+jaccard_point <- local({
+    rf_imp <- importance(model$rf$finalModel, scale = FALSE)[, class_levels]
+    rf_sel <- sapply(class_levels, \(cl) {
+        rank(-rf_imp[, cl]) <= k_by_class[cl]
+    })
+
+    lasso_sel <- sapply(class_levels, function(cl) {
+        as.matrix(orig_coefs[[cl]])[predictor_names, 1] != 0
+    })
+
+    sapply(class_levels, \(cl) jaccard(rf_sel[, cl], lasso_sel[, cl]))
+})
+
+jaccard_table <- tibble(
+    Class    = class_levels,
+    Estimate = jaccard_point,
+    Lower    = apply(jaccard_boot, 2, quantile, 0.025),
+    Upper    = apply(jaccard_boot, 2, quantile, 0.975)
+)
+
+cat("Jaccard overlap between RF and LASSO selected predictors, per class:")
+kable(jaccard_table, digits = 3)
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
+
+
+# Nogueira stability index per model per class
+sel_matrix_to_list <- function(sel_matrix) {
+    # sel_matrix is a p x r matrix `selection_array[[model]][, class, ]` where
+    # p is the number of predictors and r is the number of bootstrap
+    # replicates; the output is a list of length r, where each element is a
+    # vector of selected predictors for model/class
+    map(seq_len(ncol(sel_matrix)), \(r) {
+        rownames(sel_matrix)[sel_matrix[, r] == 1]
+    })
+}
+
+nogueira_table <- map_dfr(class_levels, function(cl) {
+    p = length(predictor_names)
+    tibble(
+        Class = cl,
+        RF_Stability = stabilityNogueira(
+            features = sel_matrix_to_list(selection_array$rf[, cl, ]),
+            p = p
+        ),
+        LASSO_Stability = stabilityNogueira(
+            features = sel_matrix_to_list(selection_array$lasso[, cl, ]),
+            p = p
+        )
+    )
+})
+
+cat("Nogueira stability index (intrinsic, per model per class):")
+kable(nogueira_table, digits = 3)
+cat("\n", paste(rep("─", 70), collapse = ""), "\n")
+
 # ── Export results ───────────────────────────────────────────────────────────
 
 write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
@@ -739,7 +947,10 @@ write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `Performance Metrics` = metrics_table,
     `Paired Model Differences` = model_difference_table,
     `RF Variable Importance` = rf_importance,
-    `LASSO Variable Importance` = lasso_importance
+    `LASSO Variable Importance` = lasso_importance,
+    `Selection Frequencies` = selection_comparison_table,
+    `Jaccard Overlap` = jaccard_table,
+    `Nogueira Stability Index` = nogueira_table
 ))
 
 ggsave(file.path(out_dir, "figure3.pdf"), figure3, width = 12, height = 8)
