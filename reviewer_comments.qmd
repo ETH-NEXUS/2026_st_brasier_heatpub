@@ -1,0 +1,622 @@
+---
+title: "Answers to reviewer comments"
+date: 2026-08-17
+format:
+    html:
+        embed-resources: true
+        lightbox: true
+bibliography: reviewer_comments.bib
+---
+
+```{r}
+#| include: false
+
+suppressPackageStartupMessages({
+    library(base64enc)
+    library(dplyr)
+    library(knitr)
+    library(purrr)
+    library(readxl)
+})
+
+# Load results
+output_dir <- "output/so_prediction_rev"
+xlsx_path <- file.path(output_dir, "results.xlsx")
+sheets <- excel_sheets(xlsx_path)
+sheets <- setNames(sheets, gsub(" ", "_", tolower(sheets)))
+results <- map(sheets, read_excel, path = xlsx_path)
+
+# Analysis settings not exported to the results workbook
+n_trees <- 1000L
+n_metric_bootstrap <- 10000L
+n_selection_bootstrap <- 2000L
+
+# Formatting helpers
+fmt <- function(x, digits = 3) {
+    formatC(x, format = "f", digits = digits)
+}
+
+fmt_integer <- function(x) {
+    formatC(x, format = "d", big.mark = ",")
+}
+
+format_power_of_ten <- function(x) {
+    exponent <- formatC(log10(x), format = "f", digits = 0)
+    paste0("\\\\(10^{", exponent, "}\\\\)")
+}
+
+download_button <- function(path, filename, label, mime) {
+    stopifnot(file.exists(path), length(filename) == 1L, length(label) == 1L)
+    encoded_file <- base64encode(path)
+    sprintf(
+        paste0(
+            '<a href="data:%s;base64,%s" download="%s" ',
+            'class="btn btn-primary" role="button">',
+            '<i class="bi bi-download" aria-hidden="true"></i> %s</a>'
+        ),
+        mime,
+        encoded_file,
+        filename,
+        label
+    )
+}
+
+# Result lookup helpers
+metric_value <- function(model, class, metric, component = "Estimate") {
+    column <- paste(component, model, sep = "_")
+    row <- results$performance_metrics |>
+        filter(Class == class, Metric == metric)
+    stopifnot(nrow(row) == 1L, column %in% names(row))
+    row[[column]]
+}
+
+difference_value <- function(class, metric, component) {
+    row <- results$paired_model_differences |>
+        filter(Class == class, Metric == metric)
+    stopifnot(nrow(row) == 1L, component %in% names(row))
+    row[[component]]
+}
+
+class_count <- function(class) {
+    sum(results$predictions$observed == class)
+}
+
+confusion_count <- function(model, observed, predicted) {
+    sheet <- results[[paste0(model, "_confusion_matrix")]]
+    row <- sheet |>
+        filter(
+            .data$observed == .env$observed,
+            .data$predicted == .env$predicted
+        )
+    stopifnot(nrow(row) == 1L)
+    row$Freq
+}
+
+confusion_display <- function(model) {
+    sheet <- results[[paste0(model, "_confusion_matrix")]]
+    matrix <- xtabs(Freq ~ observed + predicted, data = sheet)
+    data.frame(
+        Observed = rownames(matrix),
+        as.data.frame.matrix(matrix),
+        row.names = NULL,
+        check.names = FALSE
+    )
+}
+
+format_metric_ci <- function(model, class, metric) {
+    paste0(
+        fmt(metric_value(model, class, metric, "Estimate")),
+        " (95% CI ",
+        fmt(metric_value(model, class, metric, "Lower")),
+        "–",
+        fmt(metric_value(model, class, metric, "Upper")),
+        ")"
+    )
+}
+
+format_difference_ci <- function(class, metric) {
+    paste0(
+        fmt(difference_value(class, metric, "Difference_RF_minus_LASSO")),
+        ", ",
+        fmt(difference_value(class, metric, "Lower")),
+        "–",
+        fmt(difference_value(class, metric, "Upper"))
+    )
+}
+
+n_patients <- length(unique(results$predictions$pid))
+n_observations <- nrow(results$predictions)
+n_predictors <- length(unique(results$rf_variable_importance$predictor))
+
+class_counts <- setNames(
+    map_int(c("exertion", "relative.humidity", "temperature"), class_count),
+    c("exertion", "relative_humidity", "temperature")
+)
+
+n_correct_rf <- sum(
+    results$predictions$observed == results$predictions$predicted_rf
+)
+n_correct_lasso <- sum(
+    results$predictions$observed == results$predictions$predicted_lasso
+)
+stopifnot(identical(
+    results$predictions$predicted_rf,
+    results$predictions$predicted_lasso
+))
+n_temperature_as_humidity_rf <- confusion_count(
+    "rf", "temperature", "relative.humidity"
+)
+
+rf_mtry_min <- min(results$rf_tuning_profile$mtry)
+rf_mtry_max <- max(results$rf_tuning_profile$mtry)
+rf_accuracy_min <- min(results$rf_tuning_profile$Accuracy)
+rf_accuracy_max <- max(results$rf_tuning_profile$Accuracy)
+rf_best_mtry <- results$rf_tuning_profile$mtry[
+    results$rf_tuning_profile$Accuracy == rf_accuracy_max
+]
+
+lasso_alpha <- unique(results$lasso_tuning_profile$alpha)
+n_lambda <- nrow(results$lasso_tuning_profile)
+lambda_min <- min(results$lasso_tuning_profile$lambda)
+lambda_max <- max(results$lasso_tuning_profile$lambda)
+
+performance_comparison <- data.frame(
+    Metric = c(
+        "Accuracy",
+        "Multiclass Brier score",
+        "Multiclass log loss",
+        "Macro AUC"
+    ),
+    RF = c(
+        fmt(metric_value("rf", "Overall", "Accuracy")),
+        fmt(metric_value("rf", "Overall", "Multiclass Brier Score")),
+        fmt(metric_value("rf", "Overall", "Multiclass Log Loss")),
+        fmt(metric_value("rf", "Macro Average", "AUC"))
+    ),
+    LASSO = c(
+        fmt(metric_value("lasso", "Overall", "Accuracy")),
+        fmt(metric_value("lasso", "Overall", "Multiclass Brier Score")),
+        fmt(metric_value("lasso", "Overall", "Multiclass Log Loss")),
+        fmt(metric_value("lasso", "Macro Average", "AUC"))
+    ),
+    `RF − LASSO, 95% CI` = c(
+        format_difference_ci("Overall", "Accuracy"),
+        format_difference_ci("Overall", "Multiclass Brier Score"),
+        format_difference_ci("Overall", "Multiclass Log Loss"),
+        format_difference_ci("Macro Average", "AUC")
+    ),
+    check.names = FALSE
+)
+
+stability_results <- results$nogueira_stability_index |>
+    left_join(results$jaccard_overlap, by = "Class") |>
+    transmute(
+        Class = recode(
+            Class,
+            exertion = "Exertion",
+            relative.humidity = "Relative humidity",
+            temperature = "Temperature"
+        ),
+        `RF stability` = fmt(RF_Stability),
+        `LASSO stability` = fmt(LASSO_Stability),
+        `RF–LASSO Jaccard overlap (95% CI)` = paste0(
+            fmt(Estimate), " (", fmt(Lower), "–", fmt(Upper), ")"
+        )
+    )
+
+```
+
+This document addresses only the comments that N. Brasier has flagged as
+requiring attention from biostatisticians.
+
+# Answers to comments
+
+## Comment 1
+
+> The handling of within subject correlation in the Random Forest analysis has
+> not been corrected. The authors continue to rely on an ad hoc subsampling
+> approach (selecting one visit per subject, repeated three times) rather than
+> using subject level blocked cross validation or mixed effects models. This
+> approach discards a large portion of the available data and artificially
+> inflates variance estimates. The authors did not justify why this method is
+> preferable to standard alternatives, nor did they provide a sensitivity
+> analysis to show that the results are robust to the choice of subsampling. As
+> a result, the reported accuracy (i.e., 94.7%) may be overoptimistic and not
+> generalizable.
+
+### Answer to comment 1
+
+We thank the reviewer for this important comment. We replaced the previous ad
+hoc procedure, in which the visits from each participant were randomly
+allocated among three separate datasets and only one visit per participant was
+used in each analysis, with leave-one-subject-out cross-validation (LOSO-CV).
+
+The revised analysis includes all `r n_observations` eligible visits from
+`r n_patients` participants. We defined `r n_patients` validation folds, each
+containing all observations from one participant. In every fold, the model is
+trained using observations from the other `r n_patients - 1` participants and
+evaluated on all available visits from the held-out participant. Consequently,
+observations from the same participant can never occur simultaneously in the
+training and validation datasets. Every eligible visit contributes once to the
+collection of held-out predictions.
+
+Missing values are now mean-imputed separately within each training fold
+through the preprocessing recipe, thereby avoiding information leakage from the
+held-out participant.
+
+We chose subject-blocked cross-validation because the intended prediction
+setting concerns generalization to participants who were not represented during
+model training. Mixed-effects models address within-participant dependence
+under a different modelling framework, whereas subject-blocked validation
+directly evaluates this out-of-participant prediction objective.
+
+Uncertainty intervals are also calculated at the participant level. The
+`r fmt_integer(n_metric_bootstrap)` bootstrap samples resample participant
+identifiers rather than individual visits, and all observations belonging to a
+sampled participant are included together. This preserves the
+within-participant structure in the calculation of confidence intervals.
+
+Using the revised LOSO predictions, the RF correctly classified
+`r n_correct_rf` of `r n_observations` visits, corresponding to an overall
+accuracy of `r format_metric_ci("rf", "Overall", "Accuracy")` using the
+participant bootstrap. This estimate replaces the previously reported accuracy
+of 94.7%.
+
+We nevertheless acknowledge that the sample consists of only `r n_patients`
+participants. Furthermore, hyperparameter selection and performance estimation
+use the same LOSO resampling (not nested cross-validation) so the estimate may
+retain some tuning-selection optimism. The RF tuning surface was nearly flat,
+with LOSO accuracy ranging only from `r fmt(rf_accuracy_min)` to
+`r fmt(rf_accuracy_max)` across `mtry` = `r rf_mtry_min`,…, `r rf_mtry_max`,
+which suggests that this source of optimism is limited but cannot be excluded.
+
+## Comment 2
+
+> The essential classification performance metrics are missing. The manuscript
+> reports only overall accuracy with a wide confidence interval. No per class
+> precision, recall, F1 scores, confusion matrix, or ROC curves or multiclass
+> equivalents are provided. These are necessary to evaluate whether the high
+> accuracy is driven by a single class, to assess class imbalance effects, and
+> to understand the model’s calibration. The authors declined to include these
+> metrics, stating that “they are beyond the scope of this explorative work.” I
+> disagree; for a study that centers on a classification model, these are basic
+> reporting standards. Furthermore, hyperparameter tuning details (grid search
+> range, selection criteria, class weights) are absent as well, the authors
+> only cite the caret package defaults, which is insufficient for
+> reproducibility.
+
+### Answer to comment 2
+
+We agree and have substantially expanded the reporting of classification
+performance. All metrics are calculated exclusively from the held-out LOSO
+predictions rather than from predictions on the data used to fit the final
+model.
+
+For both RF and LASSO, the revised analysis now reports:
+
+- Confusion matrices
+- Overall accuracy
+- Class-specific recall/sensitivity
+- Specificity
+- Precision/positive predictive value
+- Negative predictive value
+- F1 score
+- Balanced accuracy
+- One-versus-rest AUC
+- Class-specific Brier score and log loss
+- Multiclass Brier score and multiclass log loss
+- Macro averages of all class-specific metrics
+- Participant-bootstrap 95% confidence intervals
+
+The three classes were nearly perfectly balanced: `r class_counts["exertion"]`
+exertion, `r class_counts["relative_humidity"]` relative-humidity, and
+`r class_counts["temperature"]` temperature observations. No class weights were
+therefore applied; all observations received equal weight.
+
+For the RF, the confusion matrix showed perfect classification of exertion and
+relative-humidity observations. `r n_temperature_as_humidity_rf` of the
+`r class_counts["temperature"]` temperature observations were classified as
+relative humidity. The resulting class-specific sensitivities were:
+
+- Exertion: `r fmt(metric_value("rf", "Class: exertion", "Sensitivity"))`
+- Relative humidity:
+  `r fmt(metric_value("rf", "Class: relative.humidity", "Sensitivity"))`
+- Temperature:
+  `r format_metric_ci("rf", "Class: temperature", "Sensitivity")`
+
+The macro-averaged F1 score was
+`r format_metric_ci("rf", "Macro Average", "F1")`, macro balanced accuracy was
+`r format_metric_ci("rf", "Macro Average", "Balanced Accuracy")`, and macro
+one-versus-rest AUC was
+`r format_metric_ci("rf", "Macro Average", "AUC")`.
+
+Probability-based metrics were added because accuracy and ROC discrimination
+alone do not evaluate the quality of predicted probabilities. The RF multiclass
+Brier score was
+`r format_metric_ci("rf", "Overall", "Multiclass Brier Score")`, and its
+multiclass log loss was
+`r format_metric_ci("rf", "Overall", "Multiclass Log Loss")`.
+
+We also made hyperparameter tuning fully explicit:
+
+- RF used `r fmt_integer(n_trees)` trees and evaluated
+  `mtry` = `r rf_mtry_min`,…, `r rf_mtry_max`.
+- Multinomial LASSO used `alpha` = `r lasso_alpha` and evaluated
+  `r n_lambda` logarithmically spaced lambda values between
+  `r format_power_of_ten(lambda_min)` and
+  `r format_power_of_ten(lambda_max)`.
+
+- Both hyperparameters were selected by maximizing mean LOSO accuracy.
+- Both models used the identical subject-level folds.
+- Missing-value imputation was performed within each training fold.
+- Numeric predictors were standardized for LASSO but not RF.
+
+We report one-versus-rest AUCs rather than ROC plots. Given only
+`r n_observations` observations and near-perfect separation, ROC curves would
+contain relatively little additional information. The AUCs, their confidence
+intervals, and the proper probability scoring rules provide the corresponding
+quantitative assessment. We do not interpret the Brier score and log loss as a
+complete calibration analysis; a reliable calibration curve or calibration
+slope would require a substantially larger validation sample.
+
+## Comment 3
+
+> Authors declined to provide a simpler baseline model, e.g., logistic
+> regression or LASSO, to demonstrate that the RF’s complexity is warranted and
+> that overfitting is not a serious concern. Given the small sample size (n=20)
+> and the large number of predictors (55), the risk of overfitting could be
+> substantial. The authors added a brief cautionary statement about overfitting
+> in the discussion, but they did not perform any empirical check, e.g.,
+> permutation importance with uncertainty, or a comparison with a regularized
+> model. Without such analyses, the claimed feature importance rankings remain
+> unvalidated, in my opinion.
+
+### Answer to comment 3
+
+We agree that comparison with a simpler regularized model is important given
+the combination of `r n_patients` participants and `r n_predictors` candidate
+predictors. We therefore added a multinomial LASSO logistic-regression model as
+a baseline.
+
+The RF and LASSO models use:
+
+- The same observations and predictors
+- The same fold-specific imputation
+- The same `r n_patients` subject-level LOSO folds
+- The same held-out observations for performance assessment
+- The same participant-level bootstrap samples for confidence intervals and
+  paired comparisons
+
+Numeric predictors are standardized for LASSO because the L1 penalty depends on
+predictor scale. RF does not require this normalization.
+
+The RF and LASSO produced exactly the same hard classifications: RF correctly
+classified `r n_correct_rf` and LASSO correctly classified `r n_correct_lasso`
+of `r n_observations` observations, and both had an accuracy of
+`r format_metric_ci("rf", "Overall", "Accuracy")`. Consequently, their
+class-specific precision, recall, F1 scores, and balanced accuracies were also
+identical.
+
+Their probability-based performance was likewise similar:
+
+```{r}
+#| echo: false
+kable(performance_comparison, align = c("l", "r", "r", "r"))
+```
+
+Thus, the revised analysis does not demonstrate a meaningful predictive
+advantage for RF over the simpler LASSO model. _The manuscript should state
+this explicitly rather than arguing that RF complexity is warranted by superior
+predictive performance._
+
+We also evaluated uncertainty in variable selection by performing
+`r fmt_integer(n_selection_bootstrap)` participant-level bootstrap resamples.
+RF used the previously selected `mtry` without retuning, and LASSO used the
+selected lambda. For each class, RF’s top $k$ predictors were compared with the
+$k$ nonzero LASSO coefficients, making the selected-set sizes comparable.
+
+The revised analysis reports:
+
+- RF predictor-selection frequencies
+- LASSO selection frequencies
+- Paired differences in selection frequency with percentile intervals
+- Jaccard overlap between RF and LASSO selections
+- The Nogueira feature-selection stability index (@nogueira2018stability)
+
+The stability results were moderate rather than uniformly high:
+
+```{r}
+#| echo: false
+kable(stability_results, align = c("l", "r", "r", "r"))
+```
+
+These results indicate strong agreement for the temperature predictors in the
+original fit but limited agreement for exertion and relative humidity, with
+wide bootstrap uncertainty. _We have therefore tempered the interpretation of
+individual feature rankings and now present them as exploratory findings
+requiring validation in a larger independent sample._
+
+## Comment 4
+
+Several reproducibility issues persist throughout the entire manuscript. The
+handling of core body temperature artefacts (ingestion to peak) is mentioned
+but not systematically described, nor did they provide the rule for outlier
+exclusion or imputation. The exertion intensity (1 W/kg) was not adjusted for
+individual fitness, and no sensitivity analysis stratified by VO₂max was
+performed. The authors also argued that RF handles interactions, but this does
+not account for confounding by fitness level. These omissions surely weaken the
+confidence in reported results.
+
+# Results of the revised analysis
+
+The following tables contain the complete results generated by the revised
+analysis. Estimates of predictive performance are based on the held-out LOSO
+predictions. Confidence intervals and paired model comparisons use
+participant-level bootstrap resampling.
+
+```{r}
+#| echo: false
+#| results: asis
+fig3_path <- file.path(output_dir, "figure3.pdf")
+fig3_preview_path <- file.path(output_dir, "figure3.png")
+code_path <- "code/so_prediction_rev.R"
+buttons <- c(
+    download_button(
+        xlsx_path,
+        "results.xlsx",
+        "Download all tables (XLSX)",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ),
+    download_button(
+        fig3_path,
+        "figure3.pdf",
+        "Download Figure 3 (PDF)",
+        "application/pdf"
+    ),
+    download_button(
+        code_path,
+        "so_prediction_rev.R",
+        "Download analysis code (R)",
+        "text/plain;charset=utf-8"
+    )
+)
+cat(
+    '<div class="d-flex flex-wrap gap-2 mb-4">',
+    paste(buttons, collapse = "\n"),
+    "</div>"
+)
+```
+
+## Model predictions
+
+The table contains one held-out prediction from each model for every eligible
+visit, together with the corresponding class probabilities.
+
+```{r}
+#| echo: false
+kable(results$predictions, digits = 3)
+```
+
+## Model tuning profiles
+
+The models were tuned by mean LOSO accuracy. The complete tuning profiles are
+shown below rather than only the selected hyperparameter values.
+
+::: {.panel-tabset}
+
+### Random Forest
+
+```{r}
+#| echo: false
+kable(results$rf_tuning_profile, digits = 3)
+```
+
+### Multinomial LASSO
+
+```{r}
+#| echo: false
+kable(results$lasso_tuning_profile, digits = 4)
+```
+:::
+
+## Confusion matrices
+
+Rows represent the observed classes and columns represent the predicted
+classes.
+
+::: {.panel-tabset}
+
+### Random Forest
+
+```{r}
+#| echo: false
+kable(confusion_display("rf"))
+```
+
+### Multinomial LASSO
+
+```{r}
+#| echo: false
+kable(confusion_display("lasso"))
+```
+:::
+
+## Predictive performance
+
+The table reports point estimates and participant-bootstrap 95% confidence
+intervals for RF and LASSO. Class-specific results use a one-versus-rest
+definition, and macro averages assign equal weight to each class.
+
+```{r}
+#| echo: false
+kable(results$performance_metrics, digits = 4)
+```
+
+### Paired model comparisons
+
+Differences are calculated as RF minus LASSO using the same held-out
+observations and the same bootstrap samples. Positive values favour RF for
+metrics where larger values are preferable; negative values favour RF for the
+Brier score and log loss.
+
+```{r}
+#| echo: false
+kable(results$paired_model_differences, digits = 4)
+```
+
+## Variable importance
+
+RF importance is the unscaled, class-specific permutation importance. LASSO
+importance is the absolute standardized coefficient; the coefficient column
+retains its direction, and `selected` indicates whether it is nonzero.
+
+::: {.panel-tabset}
+
+### Random Forest
+
+```{r}
+#| echo: false
+kable(results$rf_variable_importance, digits = 4)
+```
+
+### Multinomial LASSO
+
+```{r}
+#| echo: false
+kable(results$lasso_variable_importance, digits = 4)
+```
+:::
+
+### RF variable-importance figure
+
+```{r}
+#| echo: false
+#| out-width: 100%
+#| fig-align: center
+include_graphics(fig3_preview_path)
+```
+
+## Variable-selection stability
+
+Selection frequencies are based on participant-level bootstrap resamples. For
+each class, the RF selected set contains the same number of predictors as the
+nonzero LASSO set in the original fit. The paired difference is RF minus LASSO.
+
+```{r}
+#| echo: false
+kable(results$selection_frequencies, digits = 3)
+```
+
+### Agreement between RF and LASSO
+
+```{r}
+#| echo: false
+kable(results$jaccard_overlap, digits = 3)
+```
+
+### Within-model selection stability
+
+```{r}
+#| echo: false
+kable(results$nogueira_stability_index, digits = 3)
+```

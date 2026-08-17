@@ -157,7 +157,7 @@ data_dir = list(
 
 # ── Output directory ─────────────────────────────────────────────────────────
 
-out_dir <- here("results/so_prediction_rev")
+out_dir <- here("output/so_prediction_rev")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # ── Load data ────────────────────────────────────────────────────────────────
@@ -1062,3 +1062,5 @@ write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
 ))
 
 ggsave(file.path(out_dir, "figure3.pdf"), figure3, width = 12, height = 8)
+ggsave(file.path(out_dir, "figure3.png"), figure3, width = 12, height = 8,
+       dpi = 200)
