@@ -205,7 +205,7 @@ data_dir = list(
 # in /dev/shm (RAM) for faster reloading
 is_jpas_desktop <- Sys.info()[["nodename"]] == "nexus-u02"
 tmp_dir <- if (is_jpas_desktop) {
-    file.path("/dev/shm/2026_st_brasier_biomarker", args_checksum)
+    file.path("/dev/shm/2026_st_brasier_heatpub", args_checksum)
 } else {
     here("tmp", args_checksum)
 }
@@ -370,6 +370,23 @@ data_pred_3c <- data_pred |>
         across(where(is.numeric), as.numeric)
     )
 
+# Add vO2max if requested
+if (vo2max_mode %in% c("normal", "forced")) {
+    data_pred_3c <- local({
+        vo2max_data <- data_OG |>
+            select(pid, vo2max = v02max) |>
+            drop_na() |>
+            mutate(
+                pid = factor(pid),
+                vo2max = as.numeric(vo2max)
+            )
+        if (anyDuplicated(vo2max_data$pid)) {
+            stop("Duplicate pid values found in vO2max data")
+        }
+        left_join(data_pred_3c, vo2max_data, by = "pid")
+    })
+}
+
 # check missingness
 #   -> limited, we'll use mean imputation
 stopifnot(
@@ -449,6 +466,14 @@ lambda_grid <- expand.grid(
     lambda = 10^seq(-4, 1, length.out = 50)
 )
 
+# A zero penalty keeps vO2max in every LASSO fit when it is forced.
+lasso_penalty_factor <- setNames(rep(1, length(predictor_names)),
+                                 predictor_names)
+if (vo2max_mode == "forced") {
+    stopifnot("vo2max" %in% names(lasso_penalty_factor))
+    lasso_penalty_factor["vo2max"] <- 0
+}
+
 # Train models. If running on jpas Linux workstation, cache model object in
 # /dev/shm (RAM) for faster reruns (fitting the model takes a while).
 train_rf <- function() {
@@ -491,7 +516,8 @@ train_lasso <- function() {
         metric = "Accuracy",
         trControl = loso_control,
         tuneGrid = lambda_grid,
-        family = "multinomial"
+        family = "multinomial",
+        penalty.factor = unname(lasso_penalty_factor)
     )
     elapsed <- difftime(Sys.time(), t0, units = "secs")
     cat("Model fitting completed in", round(elapsed, 1), "seconds\n")
@@ -517,8 +543,6 @@ if (file.exists(model_cache_file)) {
 cat("Selected mtry:", model$rf$bestTune$mtry, "\n")
 cat("Selected lambda:", model$lasso$bestTune$lambda, "\n")
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
-
-# Note: mtry=2 is selected even if we try a larger grid (2,3,...,51)
 
 # ── Results of the 3-class model ─────────────────────────────────────────────
 
@@ -935,7 +959,8 @@ run_variable_selection_bootstrap <- function(
                             new_data = NULL)
         x_mat <- as.matrix(lasso_baked[, predictor_names])
         glmnet_fit <- glmnet(x_mat, lasso_baked$class, family = "multinomial",
-                              alpha = 1, lambda = lambda_fixed)
+                              alpha = 1, lambda = lambda_fixed,
+                              penalty.factor = unname(lasso_penalty_factor))
         coefs <- coef(glmnet_fit, s = lambda_fixed)
         lasso_sel <- sapply(class_levels, function(cl) {
             as.matrix(coefs[[cl]])[predictor_names, 1] != 0

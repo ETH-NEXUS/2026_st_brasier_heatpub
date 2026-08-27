@@ -30,6 +30,7 @@ report-only:
 clean:
 	$(RM) $(UNWANTED_PLOT)
 	$(RM) -rf tmp/
+	$(RM) -rf /dev/shm/2026_st_brasier_heatpub
 
 purge: clean
 	$(RM) -rf output
