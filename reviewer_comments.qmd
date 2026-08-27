@@ -20,7 +20,7 @@ suppressPackageStartupMessages({
 })
 
 # Load results
-output_dir <- "output/so_prediction_rev"
+output_dir <- "output/so_prediction_rev/without_vo2max"
 xlsx_path <- file.path(output_dir, "results.xlsx")
 sheets <- excel_sheets(xlsx_path)
 sheets <- setNames(sheets, gsub(" ", "_", tolower(sheets)))

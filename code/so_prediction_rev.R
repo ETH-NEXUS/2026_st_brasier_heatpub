@@ -1,9 +1,9 @@
 # ── Packages ─────────────────────────────────────────────────────────────────
 
 pkgs <- c(
-    "boot", "caret", "dplyr", "forcats", "ggplot2", "glmnet", "here", "knitr",
-    "parallel", "purrr", "randomForest", "recipes", "stabm", "stringr",
-    "tibble", "tidyr", "tidytext", "writexl"
+    "boot", "caret", "digest", "dplyr", "forcats", "ggplot2", "glmnet", "here",
+    "knitr", "optparse", "parallel", "plotcli", "purrr", "randomForest",
+    "recipes", "stabm", "stringr", "tibble", "tidyr", "tidytext", "writexl"
 )
 
 missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
@@ -39,6 +39,50 @@ if (length(missing_pkgs) > 0) {
 
 .null <- lapply(pkgs, \(pkg) suppressPackageStartupMessages(
     require(pkg, character.only = TRUE)))
+
+# ── Script options ───────────────────────────────────────────────────────────
+
+option_list <- list(
+    make_option(
+        "--vo2max",
+        type = "character",
+        default = "none",
+        help = paste(
+          "How to handle vO2max in the model: 'none' (excluded, default),",
+          "'normal' (included, penalized like other predictors), or",
+          "'forced' (included, unpenalized via glmnet's penalty.factor).",
+          "[default: %default]"
+        ),
+        metavar = "none|normal|forced"
+    )
+)
+
+parser <- OptionParser(option_list = option_list)
+args <- parse_args(parser)
+
+# Validate against the allowed set explicitly
+valid_modes <- c("none", "normal", "forced")
+if (!args$vo2max %in% valid_modes) {
+    stop(sprintf(
+        "--vo2max must be one of: %s (got '%s')",
+        paste(valid_modes, collapse = ", "), args$vo2max
+    ), call. = FALSE)
+}
+
+vo2max_mode <- args$vo2max  # "none" | "normal" | "forced"
+
+# Compute a checksum of the arguments (used to name temp files directory)
+args_checksum <- local({
+  a <- args[names(args) != "help"]
+  a <- a[order(names(a))]
+  kv <- vapply(
+    names(a),
+    function(nm) paste0(nm, "=", paste(deparse(a[[nm]]), collapse = "")),
+    character(1)
+  )
+  canonical <- paste(kv, collapse = "|")
+  digest(canonical, algo = "xxhash64")
+})
 
 # ── Parallel bootstraping ────────────────────────────────────────────────────
 
@@ -155,9 +199,24 @@ data_dir = list(
     )
 )
 
-# ── Output directory ─────────────────────────────────────────────────────────
+# ── Temporary and output directories ─────────────────────────────────────────
 
-out_dir <- here("output/so_prediction_rev")
+# If running on jpas Linux workstation, cache data and intermediate results
+# in /dev/shm (RAM) for faster reloading
+is_jpas_desktop <- Sys.info()[["nodename"]] == "nexus-u02"
+tmp_dir <- if (is_jpas_desktop) {
+    file.path("/dev/shm/2026_st_brasier_biomarker", args_checksum)
+} else {
+    here("tmp", args_checksum)
+}
+if (!dir.exists(tmp_dir)) dir.create(tmp_dir, recursive = TRUE)
+
+out_dir <- c(
+    none   = "without_vo2max",
+    normal = "with_vo2max_normal",
+    forced = "with_vo2max_forced"
+)[vo2max_mode] %>%
+    here("output/so_prediction_rev", .)
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 # ── Load data ────────────────────────────────────────────────────────────────
@@ -175,27 +234,22 @@ load_data <- function(data_dir, envir = .GlobalEnv) {
     cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 }
 
-# If running on jpas Linux workstation, cache data in /dev/shm (RAM) for
-# faster reloading (fetching from onedrive is slow)
-is_jpas_desktop <- Sys.info()[["nodename"]] == "nexus-u02"
-
-if (is_jpas_desktop) {
-    data_cache_file <- "/dev/shm/2026_st_brasier_biomarker_data.rda"
-    if (file.exists(data_cache_file)) {
-        load(data_cache_file)
-    } else {
+data_cache_file <- file.path(tmp_dir, "data.rda")
+if (file.exists(data_cache_file)) {
+    load(data_cache_file)
+} else {
+    .env <- new.env()
+    if (is_jpas_desktop) {
         if (!dir.exists(data_dir$jpas)) {
             system("gio mount onedrive://jpasquier@ethz.ch/")
         }
-        .env <- new.env()
         load_data(data_dir = data_dir$jpas, envir = .env)
-        save(list = ls(envir = .env), envir = .env, file = data_cache_file)
-        list2env(as.list(.env), envir = .GlobalEnv)
-        rm(.env)
+    } else {
+        load_data(data_dir = data_dir$mipr, envir = .env)
     }
-    rm(data_cache_file)
-} else {
-    load_data(data_dir = data_dir$mipr)
+    save(list = ls(envir = .env), envir = .env, file = data_cache_file)
+    list2env(as.list(.env), envir = .GlobalEnv)
+    rm(.env)
 }
 
 # ── Functions ────────────────────────────────────────────────────────────────
@@ -451,16 +505,12 @@ train_model <- function() {
     list(rf = rf, lasso = lasso)
 }
 
-model_cache_file <- "/dev/shm/2026_st_brasier_models.rds"
-if (is_jpas_desktop) {
-    if (file.exists(model_cache_file)) {
-        model <- readRDS(model_cache_file)
-    } else {
-        model <- train_model()
-        saveRDS(model, model_cache_file)
-    }
+model_cache_file <- file.path(tmp_dir, "models.rds")
+if (file.exists(model_cache_file)) {
+    model <- readRDS(model_cache_file)
 } else {
     model <- train_model()
+    saveRDS(model, model_cache_file)
 }
 
 # Selected hyperparameters
@@ -678,16 +728,12 @@ run_metric_bootstrap <- function(
     return(boot_out)
 }
 
-metric_bs_cache_file <- "/dev/shm/2026_st_brasier_metric_bs.rds"
-if (is_jpas_desktop) {
-    if (file.exists(metric_bs_cache_file)) {
-        boot_metric <- readRDS(metric_bs_cache_file)
-    } else {
-        boot_metric <- run_metric_bootstrap()
-        saveRDS(boot_metric, metric_bs_cache_file)
-    }
+metric_bs_cache_file <- file.path(tmp_dir, "metric_bs.rds")
+if (file.exists(metric_bs_cache_file)) {
+    boot_metric <- readRDS(metric_bs_cache_file)
 } else {
     boot_metric <- run_metric_bootstrap()
+    saveRDS(boot_metric, metric_bs_cache_file)
 }
 
 # Calculate percentile interval for each metric
@@ -813,7 +859,9 @@ figure3 <- rf_importance |>
     facet_wrap(vars(class), scales = "free_y", nrow = 1) +
     labs(x = "Variable importance (unscaled)", y = "Predictor") +
     theme_bw()
-figure3
+cat("Figure 3:\n")
+ggplotcli(figure3)
+cat(paste(rep("─", 70), collapse = ""), "\n")
 
 # Coefficients of the LASSO model
 lasso_importance <- coef(
@@ -914,16 +962,12 @@ run_variable_selection_bootstrap <- function(
     return(boot_varsel)
 }
 
-selection_bs_cache_file <- "/dev/shm/2026_st_brasier_selection_bs.rds"
-if (is_jpas_desktop) {
-    if (file.exists(selection_bs_cache_file)) {
-        boot_varsel <- readRDS(selection_bs_cache_file)
-    } else {
-        boot_varsel <- run_variable_selection_bootstrap()
-        saveRDS(boot_varsel, selection_bs_cache_file)
-    }
+selection_bs_cache_file <- file.path(tmp_dir, "selection_bs.rds")
+if (file.exists(selection_bs_cache_file)) {
+    boot_varsel <- readRDS(selection_bs_cache_file)
 } else {
     boot_varsel <- run_variable_selection_bootstrap()
+    saveRDS(boot_varsel, selection_bs_cache_file)
 }
 
 # Reshape boot_varsel$t into predictor × class × replicate
