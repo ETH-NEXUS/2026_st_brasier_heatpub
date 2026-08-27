@@ -797,8 +797,16 @@ rf_importance |>
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
 # Figure 3
+fig3_cls_lvls <- c(
+    Temperature = "temperature",
+    Humidity = "relative.humidity",
+    Exertion = "exertion"
+)
 figure3 <- rf_importance |>
-    mutate(predictor_plot = reorder_within(predictor, importance, class)) |>
+    mutate(
+        class = factor(class, fig3_cls_lvls, names(fig3_cls_lvls)),
+        predictor_plot = reorder_within(predictor, importance, class)
+    ) |>
     ggplot(aes(x = importance, y = predictor_plot)) +
     geom_point() +
     scale_y_reordered() +
