@@ -1,6 +1,6 @@
 ---
 title: "Answers to reviewer comments"
-date: 2026-08-17
+date: 2026-08-28
 format:
     html:
         embed-resources: true
@@ -17,14 +17,30 @@ suppressPackageStartupMessages({
     library(knitr)
     library(purrr)
     library(readxl)
+    library(withr)
 })
 
 # Load results
-output_dir <- "output/so_prediction_rev/without_vo2max"
-xlsx_path <- file.path(output_dir, "results.xlsx")
-sheets <- excel_sheets(xlsx_path)
-sheets <- setNames(sheets, gsub(" ", "_", tolower(sheets)))
-results <- map(sheets, read_excel, path = xlsx_path)
+output_dirs <- list(
+    primary = "output/so_prediction_rev/without_vo2max",
+    vo2max_normal = "output/so_prediction_rev/with_vo2max_normal",
+    vo2max_forced = "output/so_prediction_rev/with_vo2max_forced"
+)
+
+xlsx_paths <- map(output_dirs, ~ file.path(.x, "results.xlsx"))
+
+all_results <- map(xlsx_paths, \(xlsx_path) {
+    sheets <- excel_sheets(xlsx_path)
+    sheets <- setNames(sheets, gsub(" ", "_", tolower(sheets)))
+    map(sheets, read_excel, path = xlsx_path)
+})
+
+results <- all_results$primary
+
+# Figures and code paths
+fig3_paths <- map(output_dirs, ~ file.path(.x, "figure3.pdf"))
+fig3_preview_paths <- map(output_dirs, ~ file.path(.x, "figure3.png"))
+code_path <- "code/so_prediction_rev.R"
 
 # Analysis settings not exported to the results workbook
 n_trees <- 1000L
@@ -92,8 +108,10 @@ confusion_count <- function(model, observed, predicted) {
     row$Freq
 }
 
-confusion_display <- function(model) {
-    sheet <- results[[paste0(model, "_confusion_matrix")]]
+confusion_display <- function(model, analysis = "primary") {
+    analysis <-
+        match.arg(analysis, c("primary", "vo2max_normal", "vo2max_forced"))
+    sheet <- all_results[[analysis]][[paste0(model, "_confusion_matrix")]]
     matrix <- xtabs(Freq ~ observed + predicted, data = sheet)
     data.frame(
         Observed = rownames(matrix),
@@ -121,6 +139,25 @@ format_difference_ci <- function(class, metric) {
         fmt(difference_value(class, metric, "Lower")),
         "–",
         fmt(difference_value(class, metric, "Upper"))
+    )
+}
+
+format_sensitivity_metric_ci <- function(
+    analysis_results,
+    model,
+    class,
+    metric
+) {
+    row <- analysis_results$performance_metrics |>
+        filter(Class == .env$class, Metric == .env$metric)
+    stopifnot(nrow(row) == 1L)
+    paste0(
+        fmt(row[[paste0("Estimate_", model)]]),
+        " (",
+        fmt(row[[paste0("Lower_", model)]]),
+        "–",
+        fmt(row[[paste0("Upper_", model)]]),
+        ")"
     )
 }
 
@@ -202,6 +239,55 @@ stability_results <- results$nogueira_stability_index |>
         `RF–LASSO Jaccard overlap (95% CI)` = paste0(
             fmt(Estimate), " (", fmt(Lower), "–", fmt(Upper), ")"
         )
+    )
+
+sensitivity_analysis_labels <- c(
+    primary = "Primary analysis: vO₂max excluded",
+    vo2max_normal = "Sensitivity 1: vO₂max treated like other predictors",
+    vo2max_forced = "Sensitivity 2: vO₂max forced into LASSO"
+)
+
+sensitivity_performance <- map_dfr(names(all_results), function(analysis) {
+    imap_dfr(c(rf = "RF", lasso = "LASSO"), function(model_label, model) {
+        analysis_results <- all_results[[analysis]]
+        tibble(
+            Analysis = sensitivity_analysis_labels[[analysis]],
+            Model = unname(model_label),
+            `Accuracy (95% CI)` = format_sensitivity_metric_ci(
+                analysis_results, model, "Overall", "Accuracy"
+            ),
+            `Multiclass Brier score (95% CI)` =
+                format_sensitivity_metric_ci(
+                    analysis_results,
+                    model,
+                    "Overall",
+                    "Multiclass Brier Score"
+                ),
+            `Multiclass log loss (95% CI)` = format_sensitivity_metric_ci(
+                analysis_results,
+                model,
+                "Overall",
+                "Multiclass Log Loss"
+            ),
+            `Macro AUC (95% CI)` = format_sensitivity_metric_ci(
+                analysis_results, model, "Macro Average", "AUC"
+            )
+        )
+    })
+})
+
+forced_vo2max_coefficients <- all_results$vo2max_forced[[
+    "lasso_variable_importance"
+]] |>
+    filter(predictor == "vo2max") |>
+    transmute(
+        Class = recode(
+            class,
+            exertion = "Exertion",
+            relative.humidity = "Relative humidity",
+            temperature = "Temperature"
+        ),
+        Coefficient = fmt(coefficient)
     )
 
 ```
@@ -447,6 +533,81 @@ performed. The authors also argued that RF handles interactions, but this does
 not account for confounding by fitness level. These omissions surely weaken the
 confidence in reported results.
 
+### Partial answer to comment 4: fitness and vO₂max sensitivity analyses
+
+We thank the reviewer for raising these reproducibility and fitness-related
+concerns. This response presently addresses the role of individual fitness. We
+are still examining the handling of core-body-temperature artefacts and the
+rules for outlier exclusion and imputation; we will describe those procedures
+and their corresponding sensitivity analysis separately.
+
+The exertion protocol prescribed a body-mass-standardized workload (1 W/kg) but
+was not individualized according to aerobic fitness. We agree that this may
+leave differences in physiological strain related to fitness. We therefore
+repeated the complete subject-blocked analysis after adding measured vO₂max as
+a continuous predictor. Treating vO₂max continuously avoids imposing an
+arbitrary cut-off. We did not stratify the analysis because only `r n_patients`
+participants, each with two or three repeated measurements, were available;
+dividing these participants into fitness strata would produce very small
+groups and unstable estimates.
+
+We performed two sensitivity analyses:
+
+1. In the first, vO₂max had exactly the same role as every other candidate
+   predictor. RF could use it in candidate splits, and LASSO could retain or
+   shrink it according to the L1 penalty.
+2. In the second, vO₂max remained an ordinary RF predictor, but its LASSO
+   penalty factor was set to zero. This forced vO₂max to remain in every LASSO
+   fit while all other predictors retained a penalty factor of one. The RF is
+   consequently identical to that in the first sensitivity analysis; there is
+   no directly analogous way to force a covariate adjustment in a standard RF.
+
+Both sensitivity analyses otherwise used the same observations, preprocessing,
+subject-level LOSO folds, tuning grids, and participant-level bootstrap as the
+primary analysis. Missing numeric predictor values, including vO₂max, were
+mean-imputed separately within each training fold for both models. Numeric
+predictors were additionally standardized within each LASSO training fold.
+
+```{r}
+#| echo: false
+kable(sensitivity_performance, align = c("l", "l", "r", "r", "r", "r"))
+```
+
+When vO₂max was treated like every other predictor, RF accuracy changed from
+`r format_sensitivity_metric_ci(all_results$primary, "rf", "Overall", "Accuracy")`
+to
+`r format_sensitivity_metric_ci(all_results$vo2max_normal, "rf", "Overall", "Accuracy")`.
+The ordinarily penalized final LASSO assigned a coefficient of exactly zero to
+vO₂max for all three outcome classes. Its held-out hard classifications and
+performance estimates were unchanged from the primary analysis.
+
+When vO₂max was forced into LASSO, its standardized-scale final-model
+coefficients were:
+
+```{r}
+#| echo: false
+kable(forced_vo2max_coefficients, align = c("l", "r"))
+```
+
+Forcing vO₂max into LASSO did not change its held-out accuracy
+(`r format_sensitivity_metric_ci(all_results$vo2max_forced, "lasso", "Overall", "Accuracy")`),
+but its multiclass Brier score improved from
+`r format_sensitivity_metric_ci(all_results$primary, "lasso", "Overall", "Multiclass Brier Score")`
+to
+`r format_sensitivity_metric_ci(all_results$vo2max_forced, "lasso", "Overall", "Multiclass Brier Score")`,
+and multiclass log loss improved from
+`r format_sensitivity_metric_ci(all_results$primary, "lasso", "Overall", "Multiclass Log Loss")`
+to
+`r format_sensitivity_metric_ci(all_results$vo2max_forced, "lasso", "Overall", "Multiclass Log Loss")`.
+
+Overall, adding fitness information did not materially alter the hard
+classifications, although forcing vO₂max into LASSO improved its probability
+scores. Given the small sample, reuse of the LOSO folds for tuning and
+performance estimation, and absence of an independent validation cohort, this
+apparent improvement should be interpreted cautiously. These sensitivity
+analyses address robustness to including measured fitness as a predictor; they
+do not establish that fitness-related confounding has been eliminated.
+
 # Results of the revised analysis
 
 The following tables contain the complete results generated by the revised
@@ -457,21 +618,45 @@ participant-level bootstrap resampling.
 ```{r}
 #| echo: false
 #| results: asis
-fig3_path <- file.path(output_dir, "figure3.pdf")
-fig3_preview_path <- file.path(output_dir, "figure3.png")
-code_path <- "code/so_prediction_rev.R"
+
+# Bundle results files in a zip archive
+tmp_dir <- file.path(tempdir(check = TRUE), format(Sys.time(), "%Y%m%d%H%M%S"))
+dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
+
+path_lists <- list(xlsx = xlsx_paths, fig3 = fig3_paths)
+zip_names  <- list(xlsx = "results.zip", fig3 = "figure3.zip")
+zip_paths <- list()
+
+for (r in names(path_lists)) {
+    ext <- if (r == "xlsx") "xlsx" else "pdf"
+    ext_pattern <- paste0("\\.", ext, "$")
+
+    for (analysis in names(output_dirs)) {
+        if (r == "fig3" && grepl("forced", analysis)) next
+        file <- path_lists[[r]][[analysis]]
+        new_file_name <- sub(ext_pattern, paste0("_", analysis, ".", ext),
+                             basename(file))
+        file.copy(file, file.path(tmp_dir, new_file_name))
+    }
+
+    zip_paths[[r]] <- file.path(tmp_dir, zip_names[[r]])
+    with_dir(tmp_dir, {
+        zip(zip_paths[[r]], list.files(tmp_dir, pattern = ext_pattern))
+    })
+}
+
 buttons <- c(
     download_button(
-        xlsx_path,
-        "results.xlsx",
+        zip_paths$xlsx,
+        zip_names$xlsx,
         "Download all tables (XLSX)",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "application/zip"
     ),
     download_button(
-        fig3_path,
-        "figure3.pdf",
+        zip_paths$fig3,
+        zip_names$fig3,
         "Download Figure 3 (PDF)",
-        "application/pdf"
+        "application/zip"
     ),
     download_button(
         code_path,
@@ -492,10 +677,29 @@ cat(
 The table contains one held-out prediction from each model for every eligible
 visit, together with the corresponding class probabilities.
 
+:::: {.panel-tabset}
+
+#### Primay
+
 ```{r}
 #| echo: false
 kable(results$predictions, digits = 3)
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$predictions, digits = 3)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$predictions, digits = 3)
+```
+::::
 
 ## Model tuning profiles
 
@@ -506,17 +710,51 @@ shown below rather than only the selected hyperparameter values.
 
 ### Random Forest
 
+:::: {.panel-tabset}
+
+#### Primary
+
 ```{r}
 #| echo: false
 kable(results$rf_tuning_profile, digits = 3)
 ```
 
+#### Sensitivity
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$rf_tuning_profile, digits = 3)
+```
+
+::::
+
 ### Multinomial LASSO
+
+:::: {.panel-tabset}
+
+#### Primary
 
 ```{r}
 #| echo: false
 kable(results$lasso_tuning_profile, digits = 4)
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$lasso_tuning_profile, digits = 4)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$lasso_tuning_profile, digits = 4)
+```
+
+::::
+
 :::
 
 ## Confusion matrices
@@ -528,17 +766,51 @@ classes.
 
 ### Random Forest
 
+:::: {.panel-tabset}
+
+#### Primary
+
 ```{r}
 #| echo: false
 kable(confusion_display("rf"))
 ```
 
+#### Sensitivity
+
+```{r}
+#| echo: false
+kable(confusion_display("rf", analysis = "vo2max_normal"))
+```
+
+::::
+
 ### Multinomial LASSO
+
+:::: {.panel-tabset}
+
+#### Primary
 
 ```{r}
 #| echo: false
 kable(confusion_display("lasso"))
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(confusion_display("lasso", analysis = "vo2max_normal"))
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(confusion_display("lasso", analysis = "vo2max_forced"))
+```
+
+::::
+
 :::
 
 ## Predictive performance
@@ -547,10 +819,30 @@ The table reports point estimates and participant-bootstrap 95% confidence
 intervals for RF and LASSO. Class-specific results use a one-versus-rest
 definition, and macro averages assign equal weight to each class.
 
+:::: {.panel-tabset}
+
+#### Primary
+
 ```{r}
 #| echo: false
 kable(results$performance_metrics, digits = 4)
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$performance_metrics, digits = 4)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$performance_metrics, digits = 4)
+```
+
+::::
 
 ### Paired model comparisons
 
@@ -559,10 +851,30 @@ observations and the same bootstrap samples. Positive values favour RF for
 metrics where larger values are preferable; negative values favour RF for the
 Brier score and log loss.
 
+:::: {.panel-tabset}
+
+#### Primary
+
 ```{r}
 #| echo: false
 kable(results$paired_model_differences, digits = 4)
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$paired_model_differences, digits = 4)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$paired_model_differences, digits = 4)
+```
+
+::::
 
 ## Variable importance
 
@@ -574,27 +886,76 @@ retains its direction, and `selected` indicates whether it is nonzero.
 
 ### Random Forest
 
+:::: {.panel-tabset}
+
+#### Primary
+
 ```{r}
 #| echo: false
 kable(results$rf_variable_importance, digits = 4)
 ```
 
+#### Sensitivity
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$rf_variable_importance, digits = 4)
+```
+
+::::
+
 ### Multinomial LASSO
+
+:::: {.panel-tabset}
+
+#### Primary
 
 ```{r}
 #| echo: false
 kable(results$lasso_variable_importance, digits = 4)
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$lasso_variable_importance, digits = 4)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$lasso_variable_importance, digits = 4)
+```
+
+::::
+
 :::
 
 ### RF variable-importance figure
+
+:::: {.panel-tabset}
+
+#### Primary
 
 ```{r}
 #| echo: false
 #| out-width: 100%
 #| fig-align: center
-include_graphics(fig3_preview_path)
+include_graphics(fig3_preview_paths$primary)
 ```
+
+#### Sensitivity
+
+```{r}
+#| echo: false
+#| out-width: 100%
+#| fig-align: center
+include_graphics(fig3_preview_paths$vo2max_normal)
+```
+
+::::
 
 ## Variable-selection stability
 
@@ -602,21 +963,89 @@ Selection frequencies are based on participant-level bootstrap resamples. For
 each class, the RF selected set contains the same number of predictors as the
 nonzero LASSO set in the original fit. The paired difference is RF minus LASSO.
 
+:::: {.panel-tabset}
+
+#### Primary
+
 ```{r}
 #| echo: false
 kable(results$selection_frequencies, digits = 3)
 ```
 
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$selection_frequencies, digits = 3)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$selection_frequencies, digits = 3)
+```
+
+::::
+
 ### Agreement between RF and LASSO
+
+:::: {.panel-tabset}
+
+#### Primary
 
 ```{r}
 #| echo: false
 kable(results$jaccard_overlap, digits = 3)
 ```
 
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$jaccard_overlap, digits = 3)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$jaccard_overlap, digits = 3)
+```
+
+::::
+
 ### Within-model selection stability
+
+:::: {.panel-tabset}
+
+#### Primary
 
 ```{r}
 #| echo: false
 kable(results$nogueira_stability_index, digits = 3)
 ```
+
+#### Sensitivity 1
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_normal$nogueira_stability_index, digits = 3)
+```
+
+#### Sensitivity 2
+
+```{r}
+#| echo: false
+kable(all_results$vo2max_forced$nogueira_stability_index, digits = 3)
+```
+
+::::
+
+::: {.callout-note}
+Because we constrain the RF model to select the same number of variables as the
+LASSO model, the RF model's stability index is not independent, it is
+influenced by the LASSO model's variable selection. This dependency explains
+why the RF model's stability index differs between the two sensitivity
+analyses.
+:::
