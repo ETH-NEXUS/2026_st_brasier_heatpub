@@ -491,9 +491,7 @@ kable(performance_comparison, align = c("l", "r", "r", "r"))
 ```
 
 Thus, the revised analysis does not demonstrate a meaningful predictive
-advantage for RF over the simpler LASSO model. _The manuscript should state
-this explicitly rather than arguing that RF complexity is warranted by superior
-predictive performance._
+advantage for RF over the simpler LASSO model.
 
 We also evaluated uncertainty in variable selection by performing
 `r fmt_integer(n_selection_bootstrap)` participant-level bootstrap resamples.
@@ -518,28 +516,59 @@ kable(stability_results, align = c("l", "r", "r", "r"))
 
 These results indicate strong agreement for the temperature predictors in the
 original fit but limited agreement for exertion and relative humidity, with
-wide bootstrap uncertainty. _We have therefore tempered the interpretation of
+wide bootstrap uncertainty. We have therefore tempered the interpretation of
 individual feature rankings and now present them as exploratory findings
-requiring validation in a larger independent sample._
+requiring validation in a larger independent sample.
 
 ## Comment 4
 
-Several reproducibility issues persist throughout the entire manuscript. The
-handling of core body temperature artefacts (ingestion to peak) is mentioned
-but not systematically described, nor did they provide the rule for outlier
-exclusion or imputation. The exertion intensity (1 W/kg) was not adjusted for
-individual fitness, and no sensitivity analysis stratified by VO₂max was
-performed. The authors also argued that RF handles interactions, but this does
-not account for confounding by fitness level. These omissions surely weaken the
-confidence in reported results.
+> Several reproducibility issues persist throughout the entire manuscript. The
+> handling of core body temperature artefacts (ingestion to peak) is mentioned
+> but not systematically described, nor did they provide the rule for outlier
+> exclusion or imputation. The exertion intensity (1 W/kg) was not adjusted for
+> individual fitness, and no sensitivity analysis stratified by VO₂max was
+> performed. The authors also argued that RF handles interactions, but this
+> does not account for confounding by fitness level. These omissions surely
+> weaken the confidence in reported results.
 
-### Partial answer to comment 4: fitness and vO₂max sensitivity analyses
+### Answer to comment 4
+
+#### Data handling
 
 We thank the reviewer for raising these reproducibility and fitness-related
-concerns. This response presently addresses the role of individual fitness. We
-are still examining the handling of core-body-temperature artefacts and the
-rules for outlier exclusion and imputation; we will describe those procedures
-and their corresponding sensitivity analysis separately.
+concerns. We re-examined the complete archived data-preparation and analysis
+code to clarify how core-body-temperature measurements, outliers, exclusions,
+and missing values were handled.
+
+No point-level algorithm was applied to identify, exclude, or interpolate
+transient e-Celsius temperature changes, including potential artefacts caused
+by drinking. The e-Celsius measurements were analysed as exported after rows
+without a recorded core-body temperature were removed and recordings were
+restricted by their timestamps to the relevant study visit. Core-temperature
+predictors were then calculated from the available measurements in the final
+five minutes of each phase. These predictors comprised the mean, standard
+deviation, minimum, maximum, and changes in the mean and maximum relative to
+acclimatization. Missing measurements within these five-minute windows were
+ignored when calculating the summaries; they were not interpolated.
+
+Two complete visits (participant 5, visit 2 and participant 18, visit 4) were
+excluded because the corresponding e-Celsius visits were considered unusable.
+No numerical temperature threshold or other point-level outlier rule was
+applied to the remaining visits. We clarified these procedures in the Methods.
+
+Missingness in the model predictors was handled separately from artefact and
+visit exclusion. In the revised analysis, missing numeric predictor values were
+mean-imputed separately within each training fold, and the means estimated from
+that training fold were applied to its held-out participant. Thus, held-out
+observations did not contribute to their own imputation values. Numeric
+predictors were additionally standardized within each LASSO training fold. We
+will replace the previous participant-specific description of imputation with
+this complete procedure.
+
+_Note:_ There is one visit, out of 58, for which 16 predictors, out of 51, are
+missing. The missing value rate for predictors is therefore less than 1%.
+
+#### Adjustment for fitness
 
 The exertion protocol prescribed a body-mass-standardized workload (1 W/kg) but
 was not individualized according to aerobic fitness. We agree that this may
@@ -547,9 +576,9 @@ leave differences in physiological strain related to fitness. We therefore
 repeated the complete subject-blocked analysis after adding measured vO₂max as
 a continuous predictor. Treating vO₂max continuously avoids imposing an
 arbitrary cut-off. We did not stratify the analysis because only `r n_patients`
-participants, each with two or three repeated measurements, were available;
-dividing these participants into fitness strata would produce very small
-groups and unstable estimates.
+participants, each with three repeated measurements, were available; dividing
+these participants into fitness strata would produce very small groups and
+unstable estimates.
 
 We performed two sensitivity analyses:
 
@@ -563,10 +592,8 @@ We performed two sensitivity analyses:
    no directly analogous way to force a covariate adjustment in a standard RF.
 
 Both sensitivity analyses otherwise used the same observations, preprocessing,
-subject-level LOSO folds, tuning grids, and participant-level bootstrap as the
-primary analysis. Missing numeric predictor values, including vO₂max, were
-mean-imputed separately within each training fold for both models. Numeric
-predictors were additionally standardized within each LASSO training fold.
+subject-level LOSO folds, tuning grids, participant-level bootstrap, and
+training-fold imputation procedure as the primary analysis.
 
 ```{r}
 #| echo: false
@@ -1042,10 +1069,8 @@ kable(all_results$vo2max_forced$nogueira_stability_index, digits = 3)
 
 ::::
 
-::: {.callout-note}
-Because we constrain the RF model to select the same number of variables as the
-LASSO model, the RF model's stability index is not independent, it is
-influenced by the LASSO model's variable selection. This dependency explains
-why the RF model's stability index differs between the two sensitivity
-analyses.
-:::
+_Note_: Because we constrain the RF model to select the same number of
+variables as the LASSO model, the RF model's stability index is not
+independent, it is influenced by the LASSO model's variable selection. This
+dependency explains why the RF model's stability index differs between the two
+sensitivity analyses.

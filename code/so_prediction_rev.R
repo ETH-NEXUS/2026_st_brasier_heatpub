@@ -419,6 +419,9 @@ predictor_names <- setdiff(
     c("pid", "visit", "class")
 )
 
+# Number of missing values in predictors
+apply(is.na(data_pred_3c[predictor_names]), 1, sum)
+
 # class levels
 class_levels <- levels(data_pred_3c$class)
 class_indices <- setNames(seq_along(class_levels), class_levels)
