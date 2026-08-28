@@ -164,6 +164,10 @@ format_sensitivity_metric_ci <- function(
 n_patients <- length(unique(results$predictions$pid))
 n_observations <- nrow(results$predictions)
 n_predictors <- length(unique(results$rf_variable_importance$predictor))
+n_missing_predictor_values <- 16L
+n_predictor_values <- n_observations * n_predictors
+pct_missing_predictor_values <-
+    100 * n_missing_predictor_values / n_predictor_values
 
 class_counts <- setNames(
     map_int(c("exertion", "relative.humidity", "temperature"), class_count),
@@ -565,8 +569,10 @@ predictors were additionally standardized within each LASSO training fold. We
 will replace the previous participant-specific description of imputation with
 this complete procedure.
 
-_Note:_ There is one visit, out of 58, for which 16 predictors, out of 51, are
-missing. The missing value rate for predictors is therefore less than 1%.
+Only `r n_missing_predictor_values` of
+`r fmt_integer(n_predictor_values)` predictor values
+(`r fmt(pct_missing_predictor_values, 2)`%) were missing, all in one of the
+`r n_observations` visits.
 
 #### Adjustment for fitness
 
@@ -634,6 +640,137 @@ performance estimation, and absence of an independent validation cohort, this
 apparent improvement should be interpreted cautiously. These sensitivity
 analyses address robustness to including measured fitness as a predictor; they
 do not establish that fitness-related confounding has been eliminated.
+
+# Suggested manuscript updates
+
+Manuscript version: `Digital Biomarkers Heat_Schuepfer et al_V1.2.docx`
+
+## Materials and Methods
+
+### e-Celsius Performance system
+
+Add the following at the end of the existing subsection:
+
+> The exported e-Celsius recordings were restricted by their timestamps to the
+> relevant study visit. Rows without a recorded CBT value were removed. No
+> point-level algorithm was applied to identify, exclude, or interpolate
+> transient temperature changes, including potential artefacts caused by
+> drinking. Two complete visits (participant 5, visit 2 and participant 18,
+> visit 4) were excluded because their e-Celsius recordings were considered
+> unusable; no numerical temperature threshold was applied to the remaining
+> visits.
+
+### Statistical analysis
+
+Replace the two paragraphs beginning “This study was meant to explore the
+feasibility...” and “A Random Forest model was built...” with:
+
+> Random Forest (RF) and multinomial LASSO logistic-regression models were used
+> to classify the stress source at each visit as temperature, relative humidity,
+> or exertion. Both models used the same `r n_predictors` predictors derived from
+> the final five minutes of the acclimatization, stress, and Stress+Clothing
+> phases. These comprised means, standard deviations, minima, maxima, and
+> changes in means and maxima relative to acclimatization for CBT, HR, HRV,
+> local sweat rate, close-body temperature, and close-body relative humidity.
+> Missing observations within the five-minute windows were ignored when
+> calculating these summaries and were not interpolated.
+>
+> All `r n_observations` eligible visits from `r n_patients` participants were
+> retained in leave-one-subject-out cross-validation (LOSO-CV). Each fold held
+> out all visits from one participant and trained the model on all other
+> participants. Missing numeric predictors were mean-imputed within each
+> training fold, with the training-fold means applied to the held-out
+> participant. Numeric predictors were additionally standardized within each
+> LASSO training fold. RF used `r fmt_integer(n_trees)` trees and evaluated
+> `mtry` values from `r rf_mtry_min` to `r rf_mtry_max`. LASSO used `alpha = 1`
+> and evaluated `r n_lambda` logarithmically spaced lambda values from
+> `r format_power_of_ten(lambda_min)` to
+> `r format_power_of_ten(lambda_max)`. Hyperparameters were selected by mean
+> LOSO accuracy. No class weights were applied.
+>
+> Performance was calculated from the held-out LOSO predictions and summarized
+> by confusion matrices, overall accuracy, class-specific sensitivity,
+> specificity, precision, negative predictive value, F1 score, balanced
+> accuracy, one-versus-rest AUC, Brier score, and log loss, together with macro
+> averages and multiclass Brier score and log loss. Confidence intervals and
+> paired RF-versus-LASSO comparisons used
+> `r fmt_integer(n_metric_bootstrap)` participant-level bootstrap samples. The
+> same LOSO folds were used for tuning and performance estimation. Predictor
+> selection was assessed using `r fmt_integer(n_selection_bootstrap)`
+> participant-level bootstrap samples, selection frequencies, RF-LASSO Jaccard
+> overlap, and the Nogueira stability index (@nogueira2018stability). Two
+> sensitivity analyses added vO₂max as a continuous predictor; the first treated
+> it like the other predictors, while the second left it unpenalized in LASSO so
+> that it remained in every LASSO fit.
+
+## Results
+
+### Study participants
+
+Replace the final two sentences of the existing paragraph (“There were 16
+missing values...” and “Mean imputation was used...”) with:
+
+> Sixteen of `r fmt_integer(n_predictor_values)` predictor values
+> (`r fmt(pct_missing_predictor_values, 2)`%) were missing, all in participant
+> 8, visit 4.
+
+Imputation is described completely in the Statistical analysis subsection; the
+procedure was not fitted specifically to this participant or visit.
+
+### Prediction of stress source
+
+Replace the existing text in this subsection with:
+
+> The RF and LASSO models produced identical held-out classifications. Both
+> correctly classified `r n_correct_rf` of `r n_observations` eligible visits,
+> corresponding to an accuracy of
+> `r format_metric_ci("rf", "Overall", "Accuracy")`. All exertion and
+> relative-humidity visits were correctly classified;
+> `r n_temperature_as_humidity_rf` of the
+> `r class_counts["temperature"]` temperature visits were classified as
+> relative humidity. For RF, the macro-averaged F1 score was
+> `r format_metric_ci("rf", "Macro Average", "F1")`, macro balanced accuracy
+> was `r format_metric_ci("rf", "Macro Average", "Balanced Accuracy")`, and
+> macro one-versus-rest AUC was
+> `r format_metric_ci("rf", "Macro Average", "AUC")`. Its multiclass Brier
+> score was
+> `r format_metric_ci("rf", "Overall", "Multiclass Brier Score")` and its
+> multiclass log loss was
+> `r format_metric_ci("rf", "Overall", "Multiclass Log Loss")`. LASSO had
+> similar probability-based performance, providing no evidence of a predictive
+> advantage for RF over the simpler regularized model. The confusion matrices
+> and complete performance estimates are reported in [Table/Supplementary Table
+> X].
+>
+> RF variable importance differed by stressor. Close-body temperature measures
+> dominated the temperature classification, led by the mean change from
+> acclimatization to stress, the maximum during stress, and the corresponding
+> change in the maximum. Local sweat-rate measures were most important for
+> relative humidity, whereas mean SDNN during stress and changes in local sweat
+> rate ranked highest for exertion (Figure 3). In the primary-analysis fits, RF and
+> LASSO selected the same three temperature predictors, but their selected sets
+> overlapped less for exertion and relative humidity. Participant-bootstrap
+> selection stability was moderate rather than uniformly high [Table X]. The
+> individual predictor rankings should therefore be interpreted as exploratory.
+>
+> Adding vO₂max as an ordinarily penalized predictor did not change the held-out
+> classifications, and the final LASSO assigned it a coefficient of zero for all
+> three classes. Forcing vO₂max into LASSO also left accuracy unchanged, although
+> its multiclass Brier score improved from
+> `r format_sensitivity_metric_ci(all_results$primary, "lasso", "Overall", "Multiclass Brier Score")`
+> to
+> `r format_sensitivity_metric_ci(all_results$vo2max_forced, "lasso", "Overall", "Multiclass Brier Score")`
+> and multiclass log loss improved from
+> `r format_sensitivity_metric_ci(all_results$primary, "lasso", "Overall", "Multiclass Log Loss")`
+> to
+> `r format_sensitivity_metric_ci(all_results$vo2max_forced, "lasso", "Overall", "Multiclass Log Loss")`.
+
+Replace Figure 3 with the revised primary-analysis figure supplied below. In
+its caption, define `accheat` as the change from acclimatization to the Stress
+phase and `accheatc` as the change from acclimatization to the Stress+Clothing
+phase. The latter does not include the cool-down phase. The revised confusion
+matrices, complete performance table, and selection-stability results should be
+included in the main text or supplementary material.
 
 # Results of the revised analysis
 
