@@ -94,6 +94,19 @@ parallel_boot <- function(data, statistic, R, seed, n_cores) {
 
     stopifnot(RNGkind()[1] == "L'Ecuyer-CMRG")
 
+    # Do not let this helper alter the caller's RNG state.
+    caller_had_seed <- exists(".Random.seed", envir = .GlobalEnv,
+                              inherits = FALSE)
+    if (caller_had_seed) caller_seed <- .Random.seed
+    on.exit({
+        if (caller_had_seed) {
+            assign(".Random.seed", caller_seed, envir = .GlobalEnv)
+        } else if (exists(".Random.seed", envir = .GlobalEnv,
+                          inherits = FALSE)) {
+            rm(".Random.seed", envir = .GlobalEnv)
+        }
+    }, add = TRUE)
+
     set.seed(seed)
 
     # Save the RNG state at the start, as boot() does
@@ -101,10 +114,11 @@ parallel_boot <- function(data, statistic, R, seed, n_cores) {
 
     n <- NROW(data)
 
-    # Observed statistic
-    t0 <- statistic(data, seq_len(n))
-
-    # Generate bootstrap samples deterministically in the master process
+    # Generate bootstrap samples from their own stream. Their values therefore
+    # do not depend on how many random numbers statistic() uses for t0 or for
+    # any individual bootstrap replicate.
+    indices_seed <- boot_seed
+    assign(".Random.seed", indices_seed, envir = .GlobalEnv)
     bootstrap_indices <- replicate(
         R,
         sample.int(
@@ -115,16 +129,20 @@ parallel_boot <- function(data, statistic, R, seed, n_cores) {
         simplify = FALSE
     )
 
-    # Generate one independent RNG stream per bootstrap replicate
+    # Reserve separate, independent streams for the observed statistic and for
+    # every bootstrap replicate.
+    t0_seed <- nextRNGStream(indices_seed)
     rng_streams <- vector("list", R)
-
-    rng_streams[[1]] <- .Random.seed
+    rng_streams[[1]] <- nextRNGStream(t0_seed)
 
     if (R > 1) {
         for (r in 2:R) {
             rng_streams[[r]] <- nextRNGStream(rng_streams[[r - 1]])
         }
     }
+
+    assign(".Random.seed", t0_seed, envir = .GlobalEnv)
+    t0 <- statistic(data, seq_len(n))
 
     boot_function <- function(r) {
 
