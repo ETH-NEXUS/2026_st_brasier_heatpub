@@ -1,0 +1,185 @@
+---
+title: Review of the revised manuscript
+author: Jérôme Pasquier
+date: 2026-09-09
+format: html
+embed-resources: true
+---
+
+## Context
+
+Noé included the revised analysis I provided on August 28 in the manuscript.
+Noé sent the revised manuscript on September 8 and asked me to check it for
+consistency and correctness.
+
+## Review
+
+The documents largely reproduce my revised results correctly, but several
+corrections are needed.
+
+1. __Figure 3 shows the wrong analysis.__
+
+   The embedded figure includes `vo2max` and shows the sensitivity-analysis
+   rankings. However, the adjacent _Results_ paragraph describes the primary
+   analysis, whose temperature predictors have a different ranking.
+
+   __Suggested correction:__
+
+   Use Figure 3 from the `without_vo2max` analysis. Delete "standardized to
+   VO₂max" from its caption: the primary analysis excludes vO₂max. Moreover,
+   adding it as a predictor is not "standardization".
+
+2. __We incorrectly suggest that adding vO₂max left both models’
+   classifications unchanged.__
+
+   I am responsible for this ambiguity. Writing _Adding vO₂max as an ordinarily
+   penalized predictor did not change the held-out classifications_ (line 572)
+   without mentioning the RF model suggests that it applies to both models,
+   which is not the case.
+
+   __Suggested correction:__
+
+   > Adding vO₂max as an ordinarily penalized predictor did not change the
+   > LASSO held-out classifications, and the final LASSO assigned it a
+   > coefficient of zero for all three classes. RF accuracy increased from
+   > 0.966 to 0.983.
+
+   Moreover, I suggest using the same wording in the cover letter (although
+   the cover letter correctly mentions that including VO₂max in the RF model
+   increased its accuracy).
+
+3. __The Discussion retains limitations belonging to the discarded subsampling
+   procedure.__
+
+   The sentences beginning _For this exploratory study, the sampling strategy
+   reduces…_ (line 759) and _In addition, potential dependence at the subject
+   level…_ (line 761) conflict with the revised LOSO analysis and the cover
+   letter’s explanation.
+
+   __Suggested correction:__
+
+   Replace those two sentences with:
+
+   > Although all eligible visits were retained and validation and bootstrap
+   > resampling were performed at participant level, using the same LOSO folds
+   > for hyperparameter tuning and performance estimation may introduce
+   > tuning-selection optimism.
+
+   However, retain the existing small-sample and overfitting cautions.
+
+4. __Table 4 contains three numerical inaccuracies.__
+
+   These inaccuracies are rounding errors.
+
+   | Entry                                       | Current |   Correct |
+   | ------------------------------------------- | ------: | --------: |
+   | Exertion log loss, LASSO: upper CI limit    |   0.176 | __0.175__ |
+   | Temperature F1, both models: lower CI limit |   0.849 | __0.848__ |
+   | Macro specificity, both models: estimate    |   0.983 | __0.982__ |
+
+   The values are rounded to four decimal places in the HTML file, and an error
+   can occur when they are rounded further to three decimal places:
+
+   * Incorrect two-step rounding: 0.175497 → 0.1755 → 0.176
+   * Correct rounding: 0.175497 → 0.175
+
+5. __The predictor description incorrectly applies five-minute summaries to
+   local sweat rate.__
+
+   This is another error originating in my suggested text.
+
+   In *Statistical analysis*, all 51 predictors are described as summaries of
+   the final five minutes. The code instead uses 48 predictors from six
+   continuously recorded signals, plus three sweat-rate predictors derived from
+   sweat-rate pads.
+
+   __Suggested correction:__
+
+   Retain the description of five-minute summaries for CBT, HR, both HRV
+   measures, close-body temperature and humidity, but remove local sweat rate
+   from that list and add:
+
+   > Local sweat-rate predictors were the Stress-phase rate and its changes
+   > from acclimatization to Stress and Stress+Clothing, calculated from the
+   > phase-level pad measurements.
+
+6. __Placeholders for the LASSO tuning specification and package versions.__
+
+   In the manuscript (line 306) and the cover letter, replace `[λ_min]` with
+   `10^(-4)` and `[λ_max]` with `10^1`.
+
+   In the cover letter, use the following versions:
+
+   - R version: 4.6.1
+   - randomForest: 4.7-1.2 (used to fit the RF model)
+   - glmnet: 5.0 (used to fit the LASSO model)
+
+7. __The Figure 3 legend is inconsistent with the revised importance
+   results.__
+
+   The paragraph beginning _An overview of the results…_ (line 502) says
+   close-body microclimate measures were most discriminative for both
+   environmental stressors and highlights HR and CBT under exertion. The
+   revised rankings instead identify sweat rate for humidity and SDNN plus
+   sweat-rate changes for exertion.
+
+   __Suggested correction:__
+
+   Replace those interpretive sentences with:
+
+   > Close-body temperature measures ranked highest for temperature, local
+   > sweat-rate measures for relative humidity, and mean SDNN during stress and
+   > local sweat-rate changes for exertion.
+
+8. __The cover letter’s data-handling response is truncated.__
+
+   It ends with _so held-out observations never con_.
+
+   __Suggested correction:__
+
+   > so held-out observations never contributed to their own imputation values.
+
+9. __The Nogueira reference remains unresolved in the manuscript.__
+
+   _Statistical analysis_ contains `{Nogueira, 2017 #2196}` (line 315), and the
+   reference list does not contain the corresponding paper.
+
+   __Suggested correction:__
+
+   Insert the reference in the bibliography: Nogueira, Sarah, Konstantinos
+   Sechidis, and Gavin Brown. “On the Stability of Feature Selection
+   Algorithms.” Journal of Machine Learning Research 18, no. 174 (2018): 1–54.
+
+
+10. __The abstract overstates the model comparison.__
+
+    _Indicating no predictive advantage_ (line 48) is stronger than _providing
+    no evidence of a predictive advantage_ (what I wrote).
+
+    __Suggested correction:__
+
+    Change that phrase to:
+
+    > providing no evidence of a predictive advantage for RF over LASSO
+
+11. __Height in Table 1.__
+
+    This is unrelated to my analysis, but an SD of 10.2 metres for height is
+    not plausible. I assume that the intended SD is 10.2 centimetres.
+
+    __Suggested correction:__
+
+    Use the same unit for the mean and SD, either metres or centimetres.
+
+## Code availability
+
+I support sharing the analysis code, but it needs further preparation before
+release. In particular, I need to establish which of Kelly’s scripts produced
+the results included in the manuscript. This will take additional work, so the
+code will not be ready to share immediately.
+
+Please let me know whether you would like to share the code and, if possible,
+the data. It would also help to clarify whether the code is intended to
+document the analyses or to allow others to reproduce the reported results
+automatically from the shared data, without additional manual steps. The
+preparation required will depend on that intended use.

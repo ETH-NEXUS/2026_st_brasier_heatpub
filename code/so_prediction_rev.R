@@ -3,7 +3,8 @@
 pkgs <- c(
     "boot", "caret", "digest", "dplyr", "forcats", "ggplot2", "glmnet", "here",
     "knitr", "optparse", "parallel", "plotcli", "purrr", "randomForest",
-    "recipes", "stabm", "stringr", "tibble", "tidyr", "tidytext", "writexl"
+    "recipes", "sessioninfo", "stabm", "stringr", "tibble", "tidyr",
+    "tidytext", "writexl"
 )
 
 missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
@@ -1162,3 +1163,9 @@ write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
 ggsave(file.path(out_dir, "figure3.pdf"), figure3, width = 12, height = 8)
 ggsave(file.path(out_dir, "figure3.png"), figure3, width = 12, height = 8,
        dpi = 200)
+
+# ── Session info ─────────────────────────────────────────────────────────────
+
+sink(file.path(out_dir, "session_info.txt"))
+session_info()
+sink()
