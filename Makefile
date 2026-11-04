@@ -7,7 +7,7 @@ RSCRIPT ?= Rscript
 QUARTO ?= quarto
 
 RSCRIPT_FILE := code/so_prediction_rev.R
-QUARTO_FILE  := reviewer_comments.qmd
+QUARTO_FILE  := revision/reviewer_comments.qmd
 UNWANTED_PLOT := Rplots.pdf
 VO2MAX_MODES := none normal forced
 

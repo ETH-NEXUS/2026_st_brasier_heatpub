@@ -1,6 +1,9 @@
 ---
 title: "Answers to reviewer comments"
 date: 2026-08-28
+knitr:
+    opts_knit:
+        root.dir: "../"
 format:
     html:
         embed-resources: true
@@ -1107,7 +1110,7 @@ kable(all_results$vo2max_forced$lasso_variable_importance, digits = 4)
 #| echo: false
 #| out-width: 100%
 #| fig-align: center
-include_graphics(fig3_preview_paths$primary)
+include_graphics(normalizePath(fig3_preview_paths$primary))
 ```
 
 #### Sensitivity
@@ -1116,7 +1119,7 @@ include_graphics(fig3_preview_paths$primary)
 #| echo: false
 #| out-width: 100%
 #| fig-align: center
-include_graphics(fig3_preview_paths$vo2max_normal)
+include_graphics(normalizePath(fig3_preview_paths$vo2max_normal))
 ```
 
 ::::

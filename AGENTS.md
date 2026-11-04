@@ -11,14 +11,14 @@ repository, is limited to the statistical aspects of the revision.
 
 ## Key files
 
-- `reviewer_comments.qmd`: the statistical reviewer comments, the user’s
-  current draft responses, results from the revised analyses, and suggested
-  modifications to the manuscript. Read the relevant comment and current
-  response before making changes.
+- `revision/reviewer_comments.qmd`: the statistical reviewer comments, the
+  user's current draft responses, results from the revised analyses, and
+  suggested modifications to the manuscript. Read the relevant comment and
+  current response before making changes.
 - `code/so_prediction_rev.R`: the new analyses supporting the revision
   responses.
 - `output/so_prediction_rev/`: generated results of those revised analyses,
-  used and reported in `reviewer_comments.qmd`.
+  used and reported in `revision/reviewer_comments.qmd`.
 
 The current analysis variants are:
 
@@ -58,12 +58,12 @@ The current analysis variants are:
 
 For analysis changes, perform checks appropriate to the affected methods and
 regenerate the relevant outputs when feasible. For changes to
-`reviewer_comments.qmd`, verify that referenced results and files exist and
-render the document when needed to check executable content and presentation.
-Report what was checked and explicitly identify any analyses or rendering steps
-that were not run.
+`revision/reviewer_comments.qmd`, verify that referenced results and files
+exist and render the document when needed to check executable content and
+presentation. Report what was checked and explicitly identify any analyses or
+rendering steps that were not run.
 
-Use the existing result lookups in `reviewer_comments.qmd` where possible
-rather than duplicating numerical results as hard-coded text. Check that
-analysis settings stated in the document remain consistent with
+Use the existing result lookups in `revision/reviewer_comments.qmd` where
+possible rather than duplicating numerical results as hard-coded text. Check
+that analysis settings stated in the document remain consistent with
 `code/so_prediction_rev.R`.
