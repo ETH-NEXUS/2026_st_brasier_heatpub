@@ -7,12 +7,7 @@ library(purrr)
 library(tidyr)
 
 data <- new.env()
-file.path(
-    "/run/user/1002/gvfs",
-    "onedrive:host=ethz.ch,user=jpasquier/Dokumente",
-    "NEXUS - Documents/08_groups/02_st/Projects/_old projects",
-    "2023_st_goldhahn_heatstarext/data/2022"
-) |>
+here::here("data") |>
     list.files(pattern = ".RData", full.names = TRUE) |>
     map(~ load(.x, envir = data))
 vars <- map_dfr(ls(envir = data), ~ {

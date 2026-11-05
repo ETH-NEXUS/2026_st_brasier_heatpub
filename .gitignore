@@ -2,3 +2,6 @@ output/
 reviewer_comments.html
 revised_manuscript_review.html
 tmp/
+data/*
+!data/README.md
+reference/

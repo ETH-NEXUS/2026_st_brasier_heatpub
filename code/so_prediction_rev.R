@@ -1,45 +1,17 @@
+# Prediction of the heat stress source (Tables 3 to 5, Figure 4 and the vO2max
+# sensitivity analyses).
+
 # ── Packages ─────────────────────────────────────────────────────────────────
 
-pkgs <- c(
+suppressMessages(here::i_am("code/so_prediction_rev.R"))
+source(here::here("code/setup.R"))
+
+load_packages(c(
     "boot", "caret", "digest", "dplyr", "forcats", "ggplot2", "glmnet", "here",
     "knitr", "optparse", "parallel", "plotcli", "purrr", "randomForest",
     "recipes", "sessioninfo", "stabm", "stringr", "tibble", "tidyr",
     "tidytext", "writexl"
-)
-
-missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
-
-if (length(missing_pkgs) > 0) {
-    cat("The following packages are missing: ",
-        paste(missing_pkgs, collapse = ", "), "\n")
-
-    choice <- menu(
-        c("Yes", "No"),
-        title = "Do you want to install the missing packages?"
-    )
-
-    switch(choice,
-        # 1 = "Yes"
-        {
-            install.packages(missing_pkgs)
-            cat("Missing packages installed.\n")
-        },
-        # 2 = "No"
-        {
-            cat("Please install the missing packages manually and then run",
-                "the script again.\n")
-            invokeRestart("abort")
-        }
-    )
-
-    if (choice == 0) {
-        cat("No selection made. Exiting script.\n")
-        invokeRestart("abort")
-    }
-}
-
-.null <- lapply(pkgs, \(pkg) suppressPackageStartupMessages(
-    require(pkg, character.only = TRUE)))
+))
 
 # ── Script options ───────────────────────────────────────────────────────────
 
@@ -71,19 +43,6 @@ if (!args$vo2max %in% valid_modes) {
 }
 
 vo2max_mode <- args$vo2max  # "none" | "normal" | "forced"
-
-# Compute a checksum of the arguments (used to name temp files directory)
-args_checksum <- local({
-  a <- args[names(args) != "help"]
-  a <- a[order(names(a))]
-  kv <- vapply(
-    names(a),
-    function(nm) paste0(nm, "=", paste(deparse(a[[nm]]), collapse = "")),
-    character(1)
-  )
-  canonical <- paste(kv, collapse = "|")
-  digest(canonical, algo = "xxhash64")
-})
 
 # ── Parallel bootstraping ────────────────────────────────────────────────────
 
@@ -198,78 +157,19 @@ parallel_boot <- function(data, statistic, R, seed, n_cores) {
     out
 }
 
-# ── Set project root directory using the `here` package ──────────────────────
-
-suppressMessages(i_am("code/so_prediction_rev.R"))
-
-# ── Data location ────────────────────────────────────────────────────────────
-
-data_dir = list(
-    mipr = file.path(
-        "C:/Users/mprummer",
-        "polybox - Michael Prummer (prummer@nexus.ethz.ch)@polybox.ethz.ch",
-        "Projects/brasier_HEATSTAR_2022/data"
-    ),
-    jpas = file.path(
-        "/run/user/1002/gvfs",
-        "onedrive:host=ethz.ch,user=jpasquier/Dokumente",
-        "NEXUS - Documents/08_groups/02_st/Projects/_old projects",
-        "2023_st_goldhahn_heatstarext/data/2022"
-    )
-)
-
-# ── Temporary and output directories ─────────────────────────────────────────
-
-# If running on jpas Linux workstation, cache data and intermediate results
-# in /dev/shm (RAM) for faster reloading
-is_jpas_desktop <- Sys.info()[["nodename"]] == "nexus-u02"
-tmp_dir <- if (is_jpas_desktop) {
-    file.path("/dev/shm/2026_st_brasier_heatpub", args_checksum)
-} else {
-    here("tmp", args_checksum)
-}
-if (!dir.exists(tmp_dir)) dir.create(tmp_dir, recursive = TRUE)
+# ── Output directory ─────────────────────────────────────────────────────────
 
 out_dir <- c(
     none   = "without_vo2max",
     normal = "with_vo2max_normal",
     forced = "with_vo2max_forced"
 )[vo2max_mode] %>%
-    here("output/so_prediction_rev", .)
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+    here("output/so_prediction_rev", .) %>%
+    create_dir()
 
 # ── Load data ────────────────────────────────────────────────────────────────
 
-load_data <- function(data_dir, envir = .GlobalEnv) {
-    cat("Loading data from:", data_dir, "\n")
-    datasets <- c("data_eCRFbased", "ts_ecel", "ts_holt", "ts_ibutton")
-    t0 <- Sys.time()
-    for (dataset in datasets) {
-        file_path <- file.path(data_dir, paste0(dataset, ".RData"))
-        load(file_path, envir = envir)
-    }
-    elapsed <- difftime(Sys.time(), t0, units = "secs")
-    cat("Data loading completed in", round(elapsed, 1), "seconds\n")
-    cat("\n", paste(rep("─", 70), collapse = ""), "\n")
-}
-
-data_cache_file <- file.path(tmp_dir, "data.rda")
-if (file.exists(data_cache_file)) {
-    load(data_cache_file)
-} else {
-    .env <- new.env()
-    if (is_jpas_desktop) {
-        if (!dir.exists(data_dir$jpas)) {
-            system("gio mount onedrive://jpasquier@ethz.ch/")
-        }
-        load_data(data_dir = data_dir$jpas, envir = .env)
-    } else {
-        load_data(data_dir = data_dir$mipr, envir = .env)
-    }
-    save(list = ls(envir = .env), envir = .env, file = data_cache_file)
-    list2env(as.list(.env), envir = .GlobalEnv)
-    rm(.env)
-}
+load(prepared_data_file)
 
 # ── Functions ────────────────────────────────────────────────────────────────
 
@@ -421,7 +321,14 @@ predictor_names <- setdiff(
 )
 
 # Number of missing values in predictors
-apply(is.na(data_pred_3c[predictor_names]), 1, sum)
+missing_by_visit <- rowSums(is.na(data_pred_3c[predictor_names]))
+predictor_missingness <- tibble(
+    Visits = nrow(data_pred_3c),
+    Predictors = length(predictor_names),
+    Predictor_values = Visits * Predictors,
+    Missing_values = sum(missing_by_visit),
+    Visits_with_missing_values = sum(missing_by_visit > 0)
+)
 
 # class levels
 class_levels <- levels(data_pred_3c$class)
@@ -496,8 +403,16 @@ if (vo2max_mode == "forced") {
     lasso_penalty_factor["vo2max"] <- 0
 }
 
-# Train models. If running on jpas Linux workstation, cache model object in
-# /dev/shm (RAM) for faster reruns (fitting the model takes a while).
+# Fitted models and bootstrap results are cached on disk, in a directory keyed
+# on the script arguments and the analysis data. Changes to the code or
+# settings are not detected: run `make clean` to discard these results.
+cache_key <- digest(
+    list(args = args[names(args) != "help"], data = data_pred_3c),
+    algo = "xxhash64"
+)
+tmp_dir <- create_dir(here("tmp", cache_key))
+
+# Train models
 train_rf <- function() {
     set.seed(72929)
     cat("Fitting random forest using leave-one-subject-out cross-validation\n")
@@ -671,9 +586,11 @@ metrics_from_predictions <- function(rows) {
         true_positive <- diag(confusion)
         false_positive <- rowSums(confusion) - true_positive
         false_negative <- colSums(confusion) - true_positive
-        true_negative <- total - true_positive - false_positive - false_negative
+        true_negative <- total - true_positive - false_positive -
+            false_negative
 
-        # A zero denominator produces NaN, matching caret for undefined metrics.
+        # A zero denominator produces NaN, matching caret for undefined
+        # metrics.
         sensitivity <- true_positive / (true_positive + false_negative)
         specificity <- true_negative / (true_negative + false_positive)
         pos_pred_value <- true_positive / (true_positive + false_positive)
@@ -888,15 +805,15 @@ rf_importance |>
     kable()
 cat("\n", paste(rep("─", 70), collapse = ""), "\n")
 
-# Figure 3
-fig3_cls_lvls <- c(
+# Figure 4
+fig4_cls_lvls <- c(
     Temperature = "temperature",
     Humidity = "relative.humidity",
     Exertion = "exertion"
 )
-figure3 <- rf_importance |>
+figure4 <- rf_importance |>
     mutate(
-        class = factor(class, fig3_cls_lvls, names(fig3_cls_lvls)),
+        class = factor(class, fig4_cls_lvls, names(fig4_cls_lvls)),
         predictor_plot = reorder_within(predictor, importance, class)
     ) |>
     ggplot(aes(x = importance, y = predictor_plot)) +
@@ -905,8 +822,8 @@ figure3 <- rf_importance |>
     facet_wrap(vars(class), scales = "free_y", nrow = 1) +
     labs(x = "Variable importance (unscaled)", y = "Predictor") +
     theme_bw()
-cat("Figure 3:\n")
-ggplotcli(figure3)
+cat("Figure 4:\n")
+ggplotcli(figure4)
 cat(paste(rep("─", 70), collapse = ""), "\n")
 
 # Coefficients of the LASSO model
@@ -1157,11 +1074,12 @@ write_xlsx(path = file.path(out_dir, "results.xlsx"), list(
     `LASSO Variable Importance` = lasso_importance,
     `Selection Frequencies` = selection_comparison_table,
     `Jaccard Overlap` = jaccard_table,
-    `Nogueira Stability Index` = nogueira_table
+    `Nogueira Stability Index` = nogueira_table,
+    `Predictor Missingness` = predictor_missingness
 ))
 
-ggsave(file.path(out_dir, "figure3.pdf"), figure3, width = 12, height = 8)
-ggsave(file.path(out_dir, "figure3.png"), figure3, width = 12, height = 8,
+ggsave(file.path(out_dir, "figure4.pdf"), figure4, width = 12, height = 8)
+ggsave(file.path(out_dir, "figure4.png"), figure4, width = 12, height = 8,
        dpi = 200)
 
 # ── Session info ─────────────────────────────────────────────────────────────

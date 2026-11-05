@@ -6,32 +6,46 @@ SHELL := /bin/bash
 RSCRIPT ?= Rscript
 QUARTO ?= quarto
 
-RSCRIPT_FILE := code/so_prediction_rev.R
-QUARTO_FILE  := revision/reviewer_comments.qmd
+PREDICTION_SCRIPT := code/so_prediction_rev.R
+REVISION_REPORT := revision/reviewer_comments.qmd
 UNWANTED_PLOT := Rplots.pdf
 VO2MAX_MODES := none normal forced
 
-.PHONY: all analysis report report-only clean purge
+.PHONY: all prepare descriptives figures prediction validate revision-report \
+	clean purge
 
-all: analysis report
+all: validate
 
-analysis:
+prepare:
+	@$(RSCRIPT) code/prepare_data.R
+
+descriptives: prepare
+	@$(RSCRIPT) code/descriptives.R
+
+figures: prepare
+	@trap '$(RM) $(UNWANTED_PLOT)' EXIT
+	$(RSCRIPT) code/participant_flow.R
+	$(RSCRIPT) code/hr_slope_vo2max.R
+	$(RSCRIPT) code/supplement_timeseries.R
+
+prediction: prepare
 	@trap '$(RM) $(UNWANTED_PLOT)' EXIT
 	for mode in $(VO2MAX_MODES); do \
-		$(RSCRIPT) $(RSCRIPT_FILE) --vo2max=$$mode; \
+		$(RSCRIPT) $(PREDICTION_SCRIPT) --vo2max=$$mode; \
 	done
 
-report: analysis report-only
+validate: descriptives figures prediction
+	@$(RSCRIPT) code/validate_article.R
 
-report-only:
+# Historical record of the revision. Not part of the reproduction.
+revision-report:
 	@trap '$(RM) $(UNWANTED_PLOT)' EXIT
-	$(QUARTO) render $(QUARTO_FILE)
+	$(QUARTO) render $(REVISION_REPORT)
 
 clean:
 	$(RM) $(UNWANTED_PLOT)
 	$(RM) -rf tmp/
-	$(RM) -rf /dev/shm/2026_st_brasier_heatpub
 
 purge: clean
 	$(RM) -rf output
-	$(RM) $(QUARTO_FILE:.qmd=.html)
+	$(RM) $(REVISION_REPORT:.qmd=.html)

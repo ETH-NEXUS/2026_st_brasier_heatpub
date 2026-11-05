@@ -1,16 +1,15 @@
 # Project context
 
-The manuscript **"Toward comprehensive multimodal health monitoring in heat: A
-digital biomarker exploration study"** has been accepted. The goal of this
+The manuscript **"Multimodal machine learning for comprehensive health
+monitoring in heat stress through digital biomarkers"** has been accepted. The goal of this
 repository is now to reproduce the statistical results presented in the
 accepted article, from the study data, using the code in `code/`.
 
 The user is the biostatistician responsible for this work. They wrote the
 analyses of the revision (`code/so_prediction_rev.R`). The earlier analyses
-were written by statisticians who have since left the institute, and which of
-their scripts produced which published result is not documented. Establishing
-this is part of the work. Assistance in this repository is limited to the
-statistical aspects of the article and its code.
+were written by statisticians who have since left the institute. Assistance in
+this repository is limited to the statistical aspects of the article and its
+code.
 
 The repository was kept, rather than restarted, to preserve the development
 history of `code/so_prediction_rev.R`. Do not rewrite git history. Make renames
@@ -19,92 +18,115 @@ keeps working.
 
 ## Sources
 
-| Path                   | Role                                            | In git |
-| ---------------------- | ----------------------------------------------- | ------ |
-| `article_rev_2/*.docx` | Accepted article: the reference for all targets | No     |
-| `original_codebase/`   | Earlier scripts: raw material to migrate        | No     |
-| `code/`                | The reproducible analysis code                  | Yes    |
-| `output/`              | Generated results                               | No     |
-| `revision/`            | Record of the completed revision                | Yes    |
+| Path                     | Role                                             | In git      |
+| ------------------------ | ------------------------------------------------ | ----------- |
+| `code/`                  | The reproducible analysis code                   | Yes         |
+| `data/`                  | Input data, described in `data/README.md`        | README only |
+| `output/`                | Generated results                                | No          |
+| `reference/`             | Outputs behind the article, for comparison       | No          |
+| `revision/`              | Record of the completed revision                 | Yes         |
+| `article_rev_2/*V1.3*`   | Accepted article (temporary, see below)          | No          |
+| `original_codebase/`     | Earlier scripts (temporary, see below)           | No          |
+| `old_stuff/`             | Earlier project folders (temporary, see below)   | No          |
 
-- The article is read-only. Its Word file contains tracked changes: read it
-  with all changes accepted (`pandoc --track-changes=accept`, the default). The
-  supplementary material is not in the repository. Ask the user for it before
-  checking a supplementary target.
-- `original_codebase/` is read-only and will not be shared. Code in `code/`
-  must never source, read from, or refer the reader to it.
-- `revision/` is a historical record. Do not update it unless asked. It remains
-  useful for the reasoning behind the revised analysis, and
+- `article_rev_2/`, `original_codebase/` and `old_stuff/` are read-only. Their
+  content exists elsewhere and they will be deleted, so nothing in the
+  repository may depend on them or refer the reader to them. `old_stuff/` also
+  contains participant-level data.
+- The article is the reference for all targets, in its last version, V1.3, which
+  supersedes V1.2. Its Word file contains tracked changes: read it with all
+  changes accepted (`pandoc --track-changes=accept`, the default). The figures
+  then disappear, because they remain only as tracked deletions. These images
+  are identical to those of V1.2. The values compared by the pipeline are in
+  `code/article_values.csv`, so the Word file is not needed to run it.
+- The supplementary material is not in the repository. Ask the user for it
+  before checking a supplementary target.
+- `revision/` is a historical record. Do not update it unless asked. Its
+  suggested manuscript updates use the figure numbers of V1.2, where Figure 3 is
+  now Figure 4. It remains useful for the reasoning behind the revised analysis, and
   `revision/revised_manuscript_review.qmd` lists corrections requested from the
   authors.
-- The study data are outside the repository and may be unavailable in a given
-  session. If so, say which steps could not be run.
+- The study data may be unavailable in a given session. If so, say which steps
+  could not be run.
+
+## Pipeline
+
+`make` runs everything from the files in `data/` and compares the results with
+the article:
+
+1. `code/prepare_data.R`: regenerates the eCRF tables from `data_OG` and stops
+   unless they match their stored copies, verifies the derived columns of the
+   device files, and saves `output/prepared_data/prepared_data.rda`.
+2. `code/descriptives.R`, `code/participant_flow.R`, `code/hr_slope_vo2max.R`,
+   `code/supplement_timeseries.R` and `code/so_prediction_rev.R`: produce the
+   results in `output/`.
+3. `code/validate_article.R`: compares the results with
+   `code/article_values.csv`, writes `output/validation/article_comparison.csv`,
+   and stops if a value differs without being a known discrepancy.
+
+The raw exports are not available. Their processing is documented in
+`code/raw_preprocessing/`, which is archived and was not run. Do not describe it
+as verified. If the raw exports become available, this code can be tested and
+connected to the start of the pipeline.
+
+`code/setup.R` holds the shared settings. `code/check_vo2max_variable.R` is a
+one-off check that the vO₂max values agree across the data sets, and is not part
+of the pipeline.
 
 ## Reproduction targets
 
-Keep this table current as targets are migrated and verified. “Candidate” means
-that the script appears to match by its content, not that it is known to have
-produced the published result.
+Keep this table current. "Reproduced" means that the result was regenerated by
+`make` and compared with the article.
 
-| Article result | Starting point |
-| -------------- | -------------- |
-| Prediction: Tables 3–5, Figure 3, performance text, vO₂max sensitivity analyses | `code/so_prediction_rev.R` (in place) |
-| Missing predictor values (16 of 2,958) | Hard-coded in `revision/reviewer_comments.qmd`; not exported by the code |
-| Figure 1a, participant flow | Candidate: `original_codebase/consort.R` |
-| Table 2 and WBGT comparisons | Candidate: `original_codebase/desc_WBGT.R` |
-| Figure 2 and the HR slope–VO₂max association | Candidate: `original_codebase/so_slopes.R` |
-| Supplementary time-series plots (CBT, HR, rMSSD, SDNN, LSR, CloBT, CloBH) | Candidates: the plots in `original_codebase/dataprep_{eCel,holt,eCRF,ibutton}.R` |
-| CBT, HR and LSR means by stressor and phase | Candidate: `original_codebase/po_descriptiveanalysis.R` |
-| Table 1 | No script located; baseline variables are in `df_base` (`dataprep_eCRF.R`) |
-| CloBT and CloBH at home | No script located; `dataprep_ibutton.R` discards the home recordings |
-| Whole-body sweat loss by stressor | No script located |
+| Article result | Code | Status |
+| -------------- | ---- | ------ |
+| Tables 3–5, performance text, vO₂max sensitivity analyses | `so_prediction_rev.R` | Reproduced |
+| Figure 4 | `so_prediction_rev.R` | Identical to the reference output, whose rankings match the published figure |
+| Missing predictor values (16 of 2,958) | `so_prediction_rev.R` | Reproduced |
+| Table 1 | `descriptives.R` | Reproduced |
+| Table 2 and WBGT comparisons | `descriptives.R` | Reproduced |
+| Whole-body sweat loss | `descriptives.R` | Reproduced |
+| CBT, HR and LSR means quoted in the text | `descriptives.R` | Reproduced, except one HR SD (see below) |
+| Figure 1, participant flow | `participant_flow.R` | Counts reproduced; the authors redrew the published figure |
+| Figure 3 and the HR slope–VO₂max association | `hr_slope_vo2max.R` | Reproduced |
+| Supplementary time-series plots | `supplement_timeseries.R` | Regenerated; correspondence with the supplement not verified |
+| Supplementary tables | Not migrated | Not checked: the supplement is not available, and `po_descriptiveanalysis.R` also fitted models that the article does not describe |
 
-The article attributes Table 1, Figure 1a and the whole-body sweat loss results
-to Brasier et al., at least in part, so they may have been produced for that
-publication. If their code cannot be found, report this to the user rather than
-reconstructing an analysis and presenting it as the original.
-
-The article states that the preprocessing workflow and code are available at a
-link. The pipeline therefore has two stages:
-
-1. **Preprocessing**: raw exports to derived `.RData` files, starting from
-   `original_codebase/dataprep_eCRF.R` (which creates `df_times`, needed by the
-   others), then `dataprep_{eCel,holt,ibutton,baspo}.R`.
-2. **Analysis**: derived `.RData` files to the article's results.
+Figure 2 is a study design schematic, not a statistical result. The rankings
+described in the text about Figure 4 are not compared automatically.
 
 Not in scope unless the user asks, because the article does not report them:
 `dataprep_epy.R`, `eo_*.R`, `so_stroop_v3.R` and `so_therm.R`.
 `original_codebase/so_prediction.R` is superseded by
 `code/so_prediction_rev.R`, and the `origin/nested-cv` branch is not the
-published analysis; use them only to understand provenance.
+published analysis.
 
-### Known gaps in the earlier code
+### What cannot be verified
 
-- The setup script is missing: `Rproj_path`, `data_path`, `myfigs`, `mytabs`,
-  `%&%` and `source2` are used but never defined, and nothing in
-  `original_codebase/` sets `dd` and `measure` for `po_descriptiveanalysis.R`.
-- `dataprep_eCRF.R` sources a REDCap/CTU script stored with the data export.
-- Comments in `dataprep_eCel.R` record manual edits to raw files. Find out
-  whether the available raw files include these edits, and document any manual
-  step that the code cannot perform.
-- Figure 2's published axis label differs from the label in `so_slopes.R`, so
-  the published figure did not come directly from this version of the script.
+- All steps before the files in `data/`, including the device file reading, the
+  manual edits recorded in `dataprep_eCel.R` and the trimming of recordings.
+- The summary of the home iButton recordings. Its code was not found.
+- The article's 90% sinus-rhythm rule for heart rate variability. Nothing in the
+  available code applies it, so it may have been applied in the device software.
 
-Ask the user about missing inputs and undocumented decisions. Do not guess
-them.
+### Features of the published analysis
+
+These are reproduced as published. They are not errors to correct silently.
+
+- Device records before minute 0 count as acclimatization and those from minute
+  120 as cool-down. They enter the means by phase, but not the predictors.
+- Participant 18, visit 4 stays in Table 2 and the whole-body sweat loss, so
+  those results include 20 temperature visits, whereas the prediction uses 19.
 
 ### Known discrepancies in the accepted article
 
 Do not treat these as reproduction failures, and do not change the code to
-match them:
+match them. They are recorded in `code/article_values.csv`.
 
-- Table 4, RF macro specificity: article 0.983, results 0.982 (0.98246).
-- Table 4, LASSO temperature F1 lower limit: article 0.849, results 0.848
-  (0.84848).
-- Table 1, height: an SD of 1.02 m is implausible. The user's review assumed a
-  unit error (10.2 cm); this has not been checked against the data.
+- Results text, baseline HR under exertion: article SD 14.01, data 14.69. The
+  article repeats the SD of the temperature visits.
 
-Add further discrepancies here once confirmed.
+Add further discrepancies once confirmed.
 
 ## Analysis variants
 
@@ -134,17 +156,16 @@ The prediction script has three variants, all reported in the article:
   step. Verify results before refactoring further. State the originating script
   in the commit message.
 - **Make it runnable by someone else.** Use paths relative to the project root
-  (`here`), make the data location configurable rather than tied to a named
-  machine or user (`code/so_prediction_rev.R` still needs this), run scripts
-  non-interactively, and define every dependency explicitly. The `Makefile`
-  must grow into the single entry point; its `report` targets still render
-  `revision/reviewer_comments.qmd`.
+  (`here`), read data only from `data/`, run scripts non-interactively, and
+  define every dependency explicitly. The `Makefile` is the single entry point.
 - **Protect the data.** The article states that the data, even pseudonymized,
   are not public because they contain personal health information. Never commit
   data or participant-level results. This includes the `Predictions` sheet of
   `results.xlsx`, and participant-level values in code, comments, commit
-  messages or reports. Exact exclusions already in the analysis code, such as
-  participant and visit identifiers, are the exception.
+  messages or reports. The participant and visit identifiers that the analysis
+  code needs for exclusions and corrections are the exception. Visit dates and
+  clock times are not, which is why they are redacted in
+  `code/raw_preprocessing/`.
 - **Keep reproducibility controls.** Preserve random seeds, analysis settings
   and the distinction between variants. Generate results only through the code,
   and never edit result files by hand.
@@ -161,21 +182,24 @@ reason).
 
 - Compare unrounded values, rounded once to the article's precision. Rounding
   already-rounded values caused errors during the revision.
-- Treat the current `output/so_prediction_rev/` as the reference for the
-  revised analysis (`session_info.txt` dated 2026-09-08). `make analysis`
-  overwrites it and `make purge` deletes it, and it cannot be recovered from
-  git. Copy it outside `output/` before regenerating.
+- `reference/so_prediction_rev_20260908/` holds the outputs behind the article
+  (`session_info.txt` dated 2026-09-08). It cannot be recovered from git, and
+  `make` overwrites `output/so_prediction_rev/`, so never remove this copy. On
+  2026-11-05, a clean run gave results identical to it for every shared sheet
+  and for Figure 4, which that copy names `figure3`.
 - Run `make clean` before validating `code/so_prediction_rev.R`. Its cache in
-  `tmp/` or `/dev/shm` is keyed only on the command-line arguments, so a cached
-  run can ignore code and data changes.
+  `tmp/` is keyed on the command-line arguments and the analysis data, so a
+  cached run ignores changes to the code and settings.
 - Compare environments before interpreting a difference. The article reports R
-  4.6.1, randomForest 4.7-1.2 and glmnet 5.0. On 2026-11-05 the installed
-  versions included R 4.6.2 and glmnet 5.2. Record `session_info.txt` for every
-  analysis, and keep the versions used for the article restorable.
+  4.6.1, randomForest 4.7-1.2 and glmnet 5.0. The run of 2026-11-05 used R 4.6.2
+  and glmnet 5.2 and gave identical results, but this does not guarantee that
+  later versions will. Each script records `session_info.txt`.
 - After migrating a script, check that a clean run does not depend on objects
-  left in the R session or on `original_codebase/`.
+  left in the R session or on the temporary folders listed under Sources.
 
 ## Coding conventions
 
 - Use four spaces for indentation; do not use tabs.
 - Limit code lines to 79 characters.
+
+The archived scripts in `code/raw_preprocessing/` are kept as found and exempt.

@@ -41,8 +41,8 @@ all_results <- map(xlsx_paths, \(xlsx_path) {
 results <- all_results$primary
 
 # Figures and code paths
-fig3_paths <- map(output_dirs, ~ file.path(.x, "figure3.pdf"))
-fig3_preview_paths <- map(output_dirs, ~ file.path(.x, "figure3.png"))
+fig4_paths <- map(output_dirs, ~ file.path(.x, "figure4.pdf"))
+fig4_preview_paths <- map(output_dirs, ~ file.path(.x, "figure4.png"))
 code_path <- "code/so_prediction_rev.R"
 
 # Analysis settings not exported to the results workbook
@@ -790,8 +790,8 @@ participant-level bootstrap resampling.
 tmp_dir <- file.path(tempdir(check = TRUE), format(Sys.time(), "%Y%m%d%H%M%S"))
 dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
 
-path_lists <- list(xlsx = xlsx_paths, fig3 = fig3_paths)
-zip_names  <- list(xlsx = "results.zip", fig3 = "figure3.zip")
+path_lists <- list(xlsx = xlsx_paths, fig4 = fig4_paths)
+zip_names  <- list(xlsx = "results.zip", fig4 = "figure4.zip")
 zip_paths <- list()
 
 for (r in names(path_lists)) {
@@ -799,7 +799,7 @@ for (r in names(path_lists)) {
     ext_pattern <- paste0("\\.", ext, "$")
 
     for (analysis in names(output_dirs)) {
-        if (r == "fig3" && grepl("forced", analysis)) next
+        if (r == "fig4" && grepl("forced", analysis)) next
         file <- path_lists[[r]][[analysis]]
         new_file_name <- sub(ext_pattern, paste0("_", analysis, ".", ext),
                              basename(file))
@@ -820,9 +820,9 @@ buttons <- c(
         "application/zip"
     ),
     download_button(
-        zip_paths$fig3,
-        zip_names$fig3,
-        "Download Figure 3 (PDF)",
+        zip_paths$fig4,
+        zip_names$fig4,
+        "Download Figure 4 (PDF)",
         "application/zip"
     ),
     download_button(
@@ -1110,7 +1110,7 @@ kable(all_results$vo2max_forced$lasso_variable_importance, digits = 4)
 #| echo: false
 #| out-width: 100%
 #| fig-align: center
-include_graphics(normalizePath(fig3_preview_paths$primary))
+include_graphics(normalizePath(fig4_preview_paths$primary))
 ```
 
 #### Sensitivity
@@ -1119,7 +1119,7 @@ include_graphics(normalizePath(fig3_preview_paths$primary))
 #| echo: false
 #| out-width: 100%
 #| fig-align: center
-include_graphics(normalizePath(fig3_preview_paths$vo2max_normal))
+include_graphics(normalizePath(fig4_preview_paths$vo2max_normal))
 ```
 
 ::::
