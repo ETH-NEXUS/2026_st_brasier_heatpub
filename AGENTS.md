@@ -21,7 +21,7 @@ keeps working.
 | Path                     | Role                                             | In git      |
 | ------------------------ | ------------------------------------------------ | ----------- |
 | `code/`                  | The reproducible analysis code                   | Yes         |
-| `data/`                  | Input data, described in `data/README.md`        | README only |
+| `data/`                  | Input data, described in `data/README.md`        | README and links script |
 | `output/`                | Generated results                                | No          |
 | `reference/`             | Outputs behind the article, for comparison       | No          |
 | `revision/`              | Record of the completed revision                 | Yes         |
@@ -193,7 +193,9 @@ reason).
 - Compare environments before interpreting a difference. The article reports R
   4.6.1, randomForest 4.7-1.2 and glmnet 5.0. The run of 2026-11-05 used R 4.6.2
   and glmnet 5.2 and gave identical results, but this does not guarantee that
-  later versions will. Each script records `session_info.txt`.
+  later versions will. `renv.lock` records the versions of that run, and each
+  script records `session_info.txt`. Update the lockfile only after a clean run
+  with the new versions has been validated.
 - After migrating a script, check that a clean run does not depend on objects
   left in the R session or on the temporary folders listed under Sources.
 

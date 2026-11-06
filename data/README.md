@@ -5,8 +5,13 @@ here except this file. The data contain personal health information and are
 available on request from the corresponding author of the article (see its data
 availability statement).
 
-To run the pipeline, place the files below in this folder, without renaming
-them, and run `make` from the project root.
+To run the pipeline, provide the files below in this folder, without renaming
+them, and run `make` from the project root:
+
+- On LeoMed, where the data are stored in
+  `/cluster/work/nexus/2026_st_brasier_heatpub/data`, run `make_symlinks` to
+  link them here. Running it again refreshes the links.
+- Elsewhere, copy the files here.
 
 ## Files
 

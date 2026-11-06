@@ -4,4 +4,7 @@ revised_manuscript_review.html
 tmp/
 data/*
 !data/README.md
+!data/make_symlinks
 reference/
+.Rprofile
+renv/

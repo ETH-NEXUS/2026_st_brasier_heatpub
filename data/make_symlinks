@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Link the study data stored on LeoMed into this folder. Running the script
+# again refreshes the links. A file that is not a link is never replaced.
+set -euo pipefail
+shopt -s nullglob
+
+data_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source_dir="/cluster/work/nexus/2026_st_brasier_heatpub/data"
+
+if [[ ! -d "$source_dir" ]]; then
+    echo "Data folder not found: $source_dir" >&2
+    exit 1
+fi
+
+files=("$source_dir"/*.{RData,xlsx})
+if (( ${#files[@]} == 0 )); then
+    echo "No .RData or .xlsx file in $source_dir" >&2
+    exit 1
+fi
+
+# Check every file before changing anything
+for file in "${files[@]}"; do
+    link="$data_dir/$(basename "$file")"
+    if [[ -e "$link" && ! -L "$link" ]]; then
+        echo "Not a link, nothing changed: $link" >&2
+        exit 1
+    fi
+done
+
+for file in "${files[@]}"; do
+    ln -sfn -- "$file" "$data_dir/$(basename "$file")"
+done
