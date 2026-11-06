@@ -20,6 +20,7 @@ compares them with the values reported in the article.
 | `data/`                  | Input data (not in the repository), described in its README    |
 | `revision/`              | Record of the revision of the manuscript                       |
 | `output/`                | Generated results (not in the repository)                      |
+| `DESCRIPTION`            | R packages used, read by renv                                  |
 | `renv.lock`              | Versions of R and of the R packages used                       |
 
 ## Requirements
@@ -41,20 +42,18 @@ git clone https://github.com/ETH-NEXUS/2026_st_brasier_heatpub.git
 cd 2026_st_brasier_heatpub
 ```
 
-To install the recorded package versions in a library specific to the project,
-run these two commands from the project root. They must run in separate R
-sessions: the project library is used from the second session onwards.
+To install the recorded package versions in a library specific to the
+project, run once from the project root:
 
 ```bash
-Rscript -e 'renv::activate()'
+make setup
 ```
 
-```bash
-Rscript -e 'renv::restore(prompt = FALSE)'
-```
-
-`renv::activate()` creates `.Rprofile` and `renv/`, which git ignores. Every R
-session started from the project root then uses the project library.
+This runs `renv::activate()`, which creates `.Rprofile` and `renv/` (both
+ignored by git), then `renv::restore()`, which installs the packages from CRAN.
+Every R session started from the project root then uses the project library.
+`make` does not run this step, so the pipeline can also use packages installed
+otherwise, for example where CRAN cannot be reached.
 
 ## Data
 
@@ -94,6 +93,7 @@ prediction analysis use all available cores.
 
 | Target                 | Action                                                        |
 | ---------------------- | ------------------------------------------------------------- |
+| `make setup`           | Install the package versions of `renv.lock` (run once)        |
 | `make` or `make all`   | Run everything and compare the results with the article       |
 | `make prepare`         | Prepare the analysis data                                     |
 | `make descriptives`    | Tables 1 and 2 and the descriptive results of the text        |

@@ -1,0 +1,39 @@
+Type: Project
+Title: Reproduction of the statistical results of a heat stress digital
+    biomarker study
+Description: R packages used by the pipeline and the revision report. renv
+    reads this list, because the scripts load their packages through
+    load_packages() in code/setup.R, which renv cannot detect.
+Imports:
+    base64enc,
+    boot,
+    caret,
+    consort,
+    digest,
+    dplyr,
+    forcats,
+    ggplot2,
+    glmnet,
+    here,
+    Hmisc,
+    knitr,
+    lme4,
+    lmerTest,
+    MASS,
+    optparse,
+    plotcli,
+    purrr,
+    randomForest,
+    readr,
+    readxl,
+    recipes,
+    renv,
+    rmarkdown,
+    sessioninfo,
+    stabm,
+    stringr,
+    tibble,
+    tidyr,
+    tidytext,
+    withr,
+    writexl

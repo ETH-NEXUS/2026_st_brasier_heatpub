@@ -196,6 +196,10 @@ reason).
   later versions will. `renv.lock` records the versions of that run, and each
   script records `session_info.txt`. Update the lockfile only after a clean run
   with the new versions has been validated.
+- `DESCRIPTION` lists the packages for renv, which cannot detect those loaded
+  through `load_packages()`. Add any new package to it before running
+  `renv::snapshot()`. `make setup` restores the lockfile and is not part of
+  `make`.
 - After migrating a script, check that a clean run does not depend on objects
   left in the R session or on the temporary folders listed under Sources.
 

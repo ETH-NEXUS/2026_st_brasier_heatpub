@@ -11,10 +11,17 @@ REVISION_REPORT := revision/reviewer_comments.qmd
 UNWANTED_PLOT := Rplots.pdf
 VO2MAX_MODES := none normal forced
 
-.PHONY: all prepare descriptives figures prediction validate revision-report \
-	clean purge
+.PHONY: all setup prepare descriptives figures prediction validate \
+	revision-report clean purge
 
 all: validate
+
+# Install the package versions of renv.lock in a library specific to the
+# project. Run once; not a dependency of the other targets. The restore must
+# run in a new R session, which loads the project library through .Rprofile.
+setup:
+	$(RSCRIPT) -e 'renv::activate()'
+	$(RSCRIPT) -e 'renv::restore(prompt = FALSE)'
 
 prepare:
 	@$(RSCRIPT) code/prepare_data.R
